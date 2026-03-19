@@ -132,7 +132,7 @@
     "min_zone_b_dwell_frames_for_type4": 60,
     "enable_global_video": false,
     "enable_per_id_video": true,
-    "per_id_video_dir": "/data/ftp/per_id",
+    "per_id_video_dir": "video_result/per_id",
     "per_id_downscale_ratio": 1,
     "per_id_frame_stride": 1,
     "per_id_auto_adapt": false,

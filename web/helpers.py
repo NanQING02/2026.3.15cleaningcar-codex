@@ -48,6 +48,8 @@ def _debug_frame_path(cfg: ConfigManager) -> Optional[Path]:
 def _per_id_video_root(cfg: ConfigManager) -> Path:
     logic = cfg.data.get("logic", {}) or {}
     base_dir = logic.get("per_id_video_dir") or cfg.data.get("per_id_video_dir")
+    if isinstance(base_dir, str):
+        base_dir = base_dir.strip()
     base = _resolve_path(base_dir or (state.ROOT / "video_result" / "per_id"))
     return base
 

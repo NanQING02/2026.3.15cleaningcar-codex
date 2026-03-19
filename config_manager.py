@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+DEFAULT_PER_ID_VIDEO_DIR = 'video_result/per_id'
+
 
 class ConfigError(Exception):
     """Raised when a config file is missing or invalid."""
@@ -120,7 +122,9 @@ class ConfigManager:
         logic.setdefault('min_zone_b_dwell_frames_for_type4', 60)
         logic.setdefault('enable_global_video', False)
         logic.setdefault('enable_per_id_video', True)
-        logic.setdefault('per_id_video_dir', './video_result/per_id')
+        logic.setdefault('per_id_video_dir', DEFAULT_PER_ID_VIDEO_DIR)
+        per_id_video_dir = str(logic.get('per_id_video_dir', '') or '').strip()
+        logic['per_id_video_dir'] = per_id_video_dir or DEFAULT_PER_ID_VIDEO_DIR
         logic.setdefault('per_id_downscale_ratio', 1.0)
         logic.setdefault('per_id_frame_stride', 1)
         logic.setdefault('per_id_auto_adapt', False)
@@ -146,6 +150,7 @@ class ConfigManager:
         self.data.setdefault('event_capture_dir', default_captures)
 
     def save(self):
+        self._validate()
         with self.path.open('w', encoding='utf-8') as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
 

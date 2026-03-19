@@ -44,6 +44,10 @@ from .video_io import (
 from .vision import box_iou, get_anchor_point, point_in_box, scale_point, scale_polygon
 from .worker import DetectWorker
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_PER_ID_VIDEO_DIR = (PROJECT_ROOT / 'video_result' / 'per_id').resolve()
+
+
 def process_video(path, args):
     cap = create_video_reader(path, args)
     if cap is None or not hasattr(cap, 'isOpened') or not cap.isOpened():
@@ -252,8 +256,7 @@ def process_video(path, args):
     alias_confirm = {}
     alias_timeout = int(config.get('track_timeout_frames', 60))
     enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
-    per_id_video_dir = Path(logic_cfg.get('per_id_video_dir', './video_result/per_id'))
-    per_id_video_dir.mkdir(parents=True, exist_ok=True)
+    per_id_video_dir = None
     per_id_writers = {}
     per_id_downscale_ratio = float(logic_cfg.get('per_id_downscale_ratio', 1.0) or 1.0)
     if per_id_downscale_ratio <= 0.0:
@@ -271,6 +274,128 @@ def process_video(path, args):
     per_id_frame_stride = int(logic_cfg.get('per_id_frame_stride', 1) or 1)
     if per_id_frame_stride < 1:
         per_id_frame_stride = 1
+
+    def probe_writable_directory(directory: Path):
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            return False, str(exc)
+        probe_path = directory / f'.write_probe_{os.getpid()}_{time.time_ns()}'
+        try:
+            with probe_path.open('w', encoding='utf-8') as f:
+                f.write('ok')
+            probe_path.unlink()
+            return True, ''
+        except Exception as exc:
+            try:
+                if probe_path.exists():
+                    probe_path.unlink()
+            except Exception:
+                pass
+            return False, str(exc)
+
+    def cleanup_empty_per_id_dirs(directory: Path, stop_at: Path):
+        try:
+            current = Path(directory).resolve()
+            stop_dir = Path(stop_at).resolve()
+        except Exception:
+            return
+        while current != stop_dir and current != current.parent:
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
+
+    def resolve_per_id_video_root():
+        raw_path = str(logic_cfg.get('per_id_video_dir', '') or '').strip()
+        if raw_path:
+            configured_dir = _resolve_runtime_path(raw_path, PROJECT_ROOT)
+            ok, reason = probe_writable_directory(configured_dir)
+            if ok:
+                return configured_dir
+            print(
+                f'[per-id-video] configured directory not writable, fallback to local default: '
+                f'configured={configured_dir} reason={reason}'
+            )
+        else:
+            print(f'[per-id-video] per_id_video_dir is empty, fallback to local default: {DEFAULT_PER_ID_VIDEO_DIR}')
+
+        ok, reason = probe_writable_directory(DEFAULT_PER_ID_VIDEO_DIR)
+        if ok:
+            return DEFAULT_PER_ID_VIDEO_DIR
+
+        print(
+            f'[per-id-video] local fallback directory unavailable, disable per-id video: '
+            f'dir={DEFAULT_PER_ID_VIDEO_DIR} reason={reason}'
+        )
+        return None
+
+    def build_per_id_writer(track_id, track_state, capture_dt, session_id):
+        nonlocal enable_per_id_video, per_id_video_dir
+        if per_id_video_dir is None:
+            return None
+
+        fname = f'{session_id}.mp4'
+        date_dir = capture_dt.strftime('%Y%m%d')
+        hour_dir = capture_dt.strftime('%H')
+        roots = [per_id_video_dir]
+        if per_id_video_dir != DEFAULT_PER_ID_VIDEO_DIR:
+            roots.append(DEFAULT_PER_ID_VIDEO_DIR)
+
+        for root in roots:
+            is_fallback_root = (root == DEFAULT_PER_ID_VIDEO_DIR and root != per_id_video_dir)
+            base_dir = root / date_dir / hour_dir
+            try:
+                base_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                label = 'local fallback' if is_fallback_root else 'configured'
+                print(
+                    f'[per-id-video] failed to create output directory ({label}), '
+                    f'track={track_id} dir={base_dir} reason={exc}'
+                )
+                cleanup_empty_per_id_dirs(base_dir, root)
+                continue
+
+            target_path = base_dir / fname
+            try:
+                writer_obj = FfmpegH264Writer(
+                    str(target_path),
+                    per_id_target_width,
+                    per_id_target_height,
+                    per_id_output_fps,
+                )
+            except Exception as exc:
+                label = 'local fallback' if is_fallback_root else 'configured'
+                print(
+                    f'[per-id-video] writer init raised ({label}), '
+                    f'track={track_id} path={target_path} reason={exc}'
+                )
+                cleanup_empty_per_id_dirs(base_dir, root)
+                continue
+
+            if writer_obj.is_opened():
+                if is_fallback_root:
+                    print(f'[per-id-video] switched to local fallback directory: {root}')
+                    per_id_video_dir = root
+                return writer_obj
+
+            try:
+                writer_obj.release()
+            except Exception:
+                pass
+            label = 'local fallback' if is_fallback_root else 'configured'
+            print(f'[per-id-video] H.264 writer init failed ({label}), track={track_id} path={target_path}')
+            cleanup_empty_per_id_dirs(base_dir, root)
+
+        print(f'[per-id-video] no usable writer output path, disable per-id video for this run: track={track_id}')
+        enable_per_id_video = False
+        return None
+
+    if enable_per_id_video:
+        per_id_video_dir = resolve_per_id_video_root()
+        if per_id_video_dir is None:
+            enable_per_id_video = False
 
     for runtime_dir in (command_dir, heartbeat_path.parent, startup_flag_path.parent):
         try:
@@ -869,19 +994,11 @@ def process_video(path, args):
                                 ts_str = dt.strftime("%Y%m%d%H%M")
                                 device_name = config.get('system', {}).get('device_id') or event_manager.camera_id
                                 session_id = f"{device_name}-{ts_str}-{tid}"
-                            fname = f"{session_id}.mp4"
-                            date_dir = dt.strftime('%Y%m%d')
-                            hour_dir = dt.strftime('%H')
-                            base_dir = per_id_video_dir / date_dir / hour_dir
-                            base_dir.mkdir(parents=True, exist_ok=True)
-                            path = base_dir / fname
-                            writer_obj = FfmpegH264Writer(str(path), per_id_target_width, per_id_target_height, per_id_output_fps)
-                            if writer_obj.is_opened():
+                            writer_obj = build_per_id_writer(tid, st, dt, session_id)
+                            if writer_obj is not None:
                                 per_id_writers[tid] = writer_obj
                                 writer = writer_obj
                             else:
-                                print(f"[per-id-video] H.264 writer init failed, per-id video disabled for this run: {path}")
-                                enable_per_id_video = False
                                 writer = None
                                 break
                         if writer is not None:

@@ -147,7 +147,12 @@ python run_zone_detect.py --config configs/config.json
 - 事件输出：`events/<配置名>/`
 - 事件截图：`captures/<配置名>/`
 - 启动截图：`captures/startup/`
+  - 由 `system.startup_capture_dir` 控制
+  - 在系统首次成功产出结果后自动保存
 - 手动截图：`captures/manual/`
+- 单车视频：`video_result/per_id/`
+  - 由 `logic.per_id_video_dir` 控制
+  - 配置留空或不可写时会自动回退到这里
 - 心跳文件：由 `system.heartbeat_path` 控制
 - 启动标志：由 `system.startup_flag_path` 控制
 - 命令目录：由 `system.command_dir` 控制
