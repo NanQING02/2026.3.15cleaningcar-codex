@@ -8,6 +8,8 @@ from datetime import datetime
 from math import hypot
 from pathlib import Path
 
+import cv2
+
 from utils.upload_queue import SQLiteUploadQueue
 
 from .constants import VEHICLE_LABEL_CN
@@ -689,21 +691,7 @@ class EventManager:
             track_state[f'last_event_t{event_type}_capture_time'] = capture_time
         except Exception:
             pass
-        capture_path = None
-        if frame is not None:
-            fname = f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.jpg'
-            capture_path = str(self.capture_dir / fname)
-            try:
-                h, w = frame.shape[:2]
-                target_w, target_h = 1920, 1080
-                if w != target_w or h != target_h:
-                    frame_to_save = cv2.resize(frame, (target_w, target_h))
-                else:
-                    frame_to_save = frame
-                params = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
-                cv2.imwrite(capture_path, frame_to_save, params)
-            except Exception:
-                capture_path = None
+        capture_path = self._save_event_capture(event_type, track_id, frame_idx, frame)
         event = {
             'id': session_id,
             'trackId': track_id,
@@ -713,7 +701,7 @@ class EventManager:
             'vehicleType': vehicle_type,
             'washDuration': payload.get('washDuration', 0.0),
             'washStartTime': payload.get('washStartTime', ''),
-            'captureImage': capture_path or '',
+            'captureImage': capture_path,
             'lane': self.lane_name,
             'anchorDwellFrames': anchor_dwell,
         }
@@ -1010,13 +998,85 @@ class EventManager:
     def _prepare_capture_image(self, capture_path):
         if not capture_path:
             return ''
+        capture_file = Path(capture_path)
+        if not capture_file.exists():
+            return ''
         if self.capture_mode == 'base64':
             try:
-                with open(capture_path, 'rb') as f:
+                with capture_file.open('rb') as f:
                     return base64.b64encode(f.read()).decode('utf-8')
             except Exception:
                 return ''
-        return capture_path
+        return str(capture_file)
+
+    def _log_capture_failure(self, event_type, track_id, frame_idx, capture_path, frame,
+                             imwrite_ret=None, error=''):
+        frame_shape = ''
+        if frame is not None:
+            try:
+                h, w = frame.shape[:2]
+                frame_shape = f'{w}x{h}'
+            except Exception:
+                frame_shape = 'unavailable'
+        print(
+            '[event-capture] failed '
+            f'type={event_type} track={track_id} frame={frame_idx} '
+            f'path={capture_path or ""} frame_none={frame is None} '
+            f'frame_shape={frame_shape or "none"} imwrite={imwrite_ret} error={error or ""}'
+        )
+
+    def _save_event_capture(self, event_type, track_id, frame_idx, frame):
+        if frame is None:
+            self._log_capture_failure(event_type, track_id, frame_idx, '', frame, error='frame is None')
+            return ''
+        capture_file = self.capture_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.jpg'
+        capture_path = str(capture_file)
+        try:
+            h, w = frame.shape[:2]
+            target_w, target_h = 1920, 1080
+            if w != target_w or h != target_h:
+                frame_to_save = cv2.resize(frame, (target_w, target_h))
+            else:
+                frame_to_save = frame
+            params = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+            imwrite_ret = bool(cv2.imwrite(capture_path, frame_to_save, params))
+            if not imwrite_ret:
+                try:
+                    capture_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                self._log_capture_failure(event_type, track_id, frame_idx, capture_path, frame, imwrite_ret=False)
+                return ''
+            if not capture_file.exists() or capture_file.stat().st_size <= 0:
+                try:
+                    capture_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                self._log_capture_failure(
+                    event_type,
+                    track_id,
+                    frame_idx,
+                    capture_path,
+                    frame,
+                    imwrite_ret=True,
+                    error='file missing after write',
+                )
+                return ''
+            return capture_path
+        except Exception as exc:
+            try:
+                capture_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._log_capture_failure(
+                event_type,
+                track_id,
+                frame_idx,
+                capture_path,
+                frame,
+                error=str(exc),
+            )
+            return ''
 
     def _build_api_payload(self, event, track_state, frame_idx):
         if not self.uploader:

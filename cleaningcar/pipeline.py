@@ -33,6 +33,7 @@ from .runtime_signals import (
     save_snapshot_images,
     write_json_atomic,
 )
+from .text_render import draw_text
 from .tracking import VehicleTracker
 from .video_io import (
     FfmpegH264Writer,
@@ -672,8 +673,15 @@ def process_video(path, args):
             disp_label = locked or label_now or ''
             if disp_label:
                 text_cn = localize_vehicle(disp_label)
-                cv2.putText(frame_img, text_cn, (x1, max(0, y1 - 18)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2, cv2.LINE_AA)
+                draw_text(
+                    frame_img,
+                    text_cn,
+                    (x1, max(0, y1 - 18)),
+                    font_scale=0.75,
+                    color=(255, 255, 255),
+                    thickness=2,
+                    anchor='lb',
+                )
             if debug_anchor_points:
                 anchor_pt = anchor_point_for(det_ref['box'])
                 if anchor_pt:
@@ -795,8 +803,15 @@ def process_video(path, args):
                             car_plate_cache[car_id] = {'plate_id': plate_id, 'age': 0}
                         if video_writer and text_val:
                             x1, y1, _, _ = det['box']
-                            cv2.putText(frame_out, f'PID:{plate_id} {text_val}', (x1, y1 - 10),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
+                            draw_text(
+                                frame_out,
+                                f'PID:{plate_id} {text_val}',
+                                (x1, max(0, y1 - 10)),
+                                font_scale=0.5,
+                                color=(0, 200, 255),
+                                thickness=1,
+                                anchor='lb',
+                            )
                 alias_seen = set()
                 plates_with_updates = set()
                 for plate_id, info in plate_track_info.items():

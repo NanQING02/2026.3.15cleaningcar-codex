@@ -7,21 +7,10 @@ import cv2
 import numpy as np
 from rknnlite.api import RKNNLite
 
-_PLATE_NAME = (
-    "#"
-    "京沪津渝冀晋蒙辽吉黑"
-    "苏浙皖闽赣鲁豫鄂湘粤"
-    "桂琼川贵云藏陕甘青宁新"
-    "学警港澳挂使领民航危险品"
-    "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
-)
-_PLATE_COLORS = [
-    "黑色",
-    "蓝色",
-    "绿色",
-    "白色",
-    "黄色",
-]
+from .constants import PLATE_COLOR_NAMES, PLATE_DECODE_CHARS
+
+_PLATE_NAME = PLATE_DECODE_CHARS
+_PLATE_COLORS = PLATE_COLOR_NAMES
 
 
 def _letter_box(img: np.ndarray, size: Tuple[int, int] = (640, 640)) -> Tuple[np.ndarray, float, int, int]:

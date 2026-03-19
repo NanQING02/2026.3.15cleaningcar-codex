@@ -59,17 +59,27 @@ DIRECTION_MAP = {
     (-1, 1): (7, '反向前出'),
     (-1, -1): (8, '反向后出'),
 }
-LPR_CHARS = ['京', '沪', '津', '渝', '冀', '晋', '蒙', '辽', '吉', '黑',
-             '苏', '浙', '皖', '闽', '赣', '鲁', '豫', '鄂', '湘', '粤',
-             '桂', '琼', '川', '贵', '云', '藏', '陕', '甘', '青', '宁',
-             '新',
-             '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-             'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K',
-             'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V',
-             'W', 'X', 'Y', 'Z', 'I', 'O', '-']
-LPR_BLANK = len(LPR_CHARS) - 1
+PLATE_DECODE_CHARS = (
+    "#"
+    "京沪津渝冀晋蒙辽吉黑"
+    "苏浙皖闽赣鲁豫鄂湘粤"
+    "桂琼川贵云藏陕甘青宁新"
+    "学警港澳挂使领民航危"
+    "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+    "险品"
+)
+LPR_CHARS = list(PLATE_DECODE_CHARS)
+LPR_BLANK = 0
+PLATE_COLOR_NAMES = ['黑色', '蓝色', '绿色', '白色', '黄色']
+PROVINCE_CHARS = ''.join([
+    '京', '沪', '津', '渝', '冀', '晋', '蒙', '辽', '吉', '黑',
+    '苏', '浙', '皖', '闽', '赣', '鲁', '豫', '鄂', '湘', '粤',
+    '桂', '琼', '川', '贵', '云', '藏', '陕', '甘', '青', '宁', '新',
+])
+PLATE_SUFFIX_CHARS = '学警港澳挂使领民航危险品'
+PLATE_ALLOWED_CHARS = set(PLATE_DECODE_CHARS[1:])
+PLATE_LETTERS = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
 CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(2, 2))
-PROVINCE_CHARS = ''.join(['京','沪','津','渝','冀','晋','蒙','辽','吉','黑','苏','浙','皖','闽','赣','鲁','豫','鄂','湘','粤','桂','琼','川','贵','云','藏','陕','甘','青','宁','新'])
 PLATE_REGEX = re.compile(rf'^[{PROVINCE_CHARS}][A-Z][A-Z0-9]{{5}}$')
 PLATE_REGEX_NE = re.compile(rf'^[{PROVINCE_CHARS}][A-Z][A-Z0-9]{{6}}$')
 ALNUM = set('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ')

@@ -4,9 +4,12 @@ import numpy as np
 
 from .constants import (
     ALNUM,
+    PLATE_ALLOWED_CHARS,
+    PLATE_LETTERS,
     PLATE_REGEX,
     PLATE_REGEX_NE,
     PROVINCE_CHARS,
+    PLATE_SUFFIX_CHARS,
 )
 
 
@@ -14,18 +17,37 @@ def normalize_plate_text(text):
     if not text:
         return ""
     text = text.upper().replace("路", "").replace(".", "").replace(" ", "")
-    filtered = "".join(ch for ch in text if ch in ALNUM or ch in PROVINCE_CHARS)
+    filtered = "".join(ch for ch in text if ch in PLATE_ALLOWED_CHARS)
     return filtered
 
 
 def is_valid_plate(text):
     if not text:
         return False
+    text = normalize_plate_text(text)
     if PLATE_REGEX.match(text):
         return True
     if PLATE_REGEX_NE.match(text):
         return True
-    return False
+    if len(text) < 7 or len(text) > 9:
+        return False
+    if text[0] not in PROVINCE_CHARS or text[1] not in PLATE_LETTERS:
+        return False
+
+    tail = ''
+    if text.endswith('险品'):
+        tail = '险品'
+    elif text[-1] in PLATE_SUFFIX_CHARS:
+        tail = text[-1]
+    if not tail:
+        return False
+
+    body = text[2:-len(tail)]
+    if len(body) < 4 or len(body) > 6:
+        return False
+    if not all(ch in ALNUM for ch in body):
+        return False
+    return True
 
 
 class PlateTextTracker:

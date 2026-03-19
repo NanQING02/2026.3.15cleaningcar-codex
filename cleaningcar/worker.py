@@ -14,6 +14,7 @@ from .constants import (
 )
 from .fp_detect import FpModelPostprocessor
 from .plate_lpr import DualPlateRecognizer
+from .text_render import draw_text
 
 
 class DetectWorker(threading.Thread):
@@ -178,15 +179,14 @@ class DetectWorker(threading.Thread):
                 if not self.args.no_draw:
                     color = select_box_color(label_name)
                     cv2.rectangle(draw_frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(
+                    draw_text(
                         draw_frame,
                         label,
                         (x1, max(0, y1 - 12)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.75,
-                        (255, 255, 255),
-                        2,
-                        cv2.LINE_AA,
+                        font_scale=0.75,
+                        color=(255, 255, 255),
+                        thickness=2,
+                        anchor='lb',
                     )
                     for pt in item.get("landmarks", []) or []:
                         if not isinstance(pt, (list, tuple)) or len(pt) != 2:
