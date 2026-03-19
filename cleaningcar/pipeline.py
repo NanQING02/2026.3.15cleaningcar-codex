@@ -214,30 +214,14 @@ def process_video(path, args):
             pass
     debug_frame_interval = max(1, int(video_cfg.get('debug_frame_interval', 30)))
 
-    task_q = Queue(maxsize=args.queue_size)
-    result_q = Queue()
-    core_mask = parse_core_mask(args.core_mask)
-    workers = [DetectWorker(i, args, core_mask, task_q, result_q, detect_mask) for i in range(args.workers)]
-    for w in workers:
-        w.start()
-
-    monitor_stop = threading.Event()
-    monitor_thread = None
-    if args.monitor_interval > 0:
-        monitor_thread = threading.Thread(target=monitor_loop, args=(args.monitor_interval, monitor_stop), daemon=True)
-        monitor_thread.start()
-
     start = time.time()
     total_frames = 0
     next_frame_to_write = 0
     pending = {}
     raw_frame_cache = {}
-    finished_workers = 0
     reader_log_interval = float(config.get('reader_fps_log_interval', 10.0))
     reader_log_last_time = start
     reader_log_frames = 0
-    worker_last_frames = [0 for _ in workers]
-    worker_last_infer = [0.0 for _ in workers]
     latest_raw_frame = None
     latest_annotated_frame = None
     latest_frame_idx = -1
@@ -250,6 +234,8 @@ def process_video(path, args):
     last_command_poll = 0.0
     config_path = str(getattr(args, '_config_path', config.get('config_path', '')) or '')
     config_name = str(config.get('config_name') or (Path(config_path).name if config_path else ''))
+    task_q = Queue(maxsize=args.queue_size)
+    result_q = Queue()
 
     car_plate_cache = {}
     car_plate_cache_ttl = int(config.get('car_plate_cache_ttl', CAR_PLATE_CACHE_TTL))
@@ -414,6 +400,34 @@ def process_video(path, args):
         except Exception:
             return -1
 
+    def write_startup_heartbeat(stage='booting'):
+        now = time.time()
+        payload = {
+            'timestamp': now,
+            'pid': os.getpid(),
+            'status': 'starting',
+            'startup_emitted': startup_emitted,
+            'total_frames': total_frames,
+            'next_frame_to_write': next_frame_to_write,
+            'pending_results': len(pending),
+            'task_queue_size': _safe_qsize(task_q),
+            'result_queue_size': _safe_qsize(result_q),
+            'last_progress_ts': now,
+            'last_frame_read_ts': last_frame_read_ts,
+            'last_result_ts': last_result_ts,
+            'latest_frame_idx': latest_frame_idx,
+            'latest_capture_ts': latest_capture_ts,
+            'reconnect_count': reconnect_count,
+            'config_path': config_path,
+            'config_name': config_name,
+            'source': str(path),
+            'startup_stage': stage,
+        }
+        try:
+            write_json_atomic(heartbeat_path, payload)
+        except Exception:
+            pass
+
     def write_heartbeat(status='running', force=False, extra=None):
         nonlocal last_heartbeat_write
         now = time.time()
@@ -561,6 +575,39 @@ def process_video(path, args):
                     pass
 
     write_heartbeat(status='starting', force=True)
+
+    startup_heartbeat_stop = threading.Event()
+
+    def startup_heartbeat_loop():
+        while not startup_heartbeat_stop.wait(heartbeat_interval_seconds):
+            write_startup_heartbeat(stage='booting')
+
+    core_mask = parse_core_mask(args.core_mask)
+    write_startup_heartbeat(stage='before_worker_init')
+    startup_heartbeat_thread = threading.Thread(target=startup_heartbeat_loop, daemon=True)
+    startup_heartbeat_thread.start()
+    workers = []
+    try:
+        for i in range(args.workers):
+            worker = DetectWorker(i, args, core_mask, task_q, result_q, detect_mask)
+            workers.append(worker)
+            write_startup_heartbeat(stage=f'worker_{i}_ready')
+        for w in workers:
+            w.start()
+        write_startup_heartbeat(stage='workers_started')
+    finally:
+        startup_heartbeat_stop.set()
+        startup_heartbeat_thread.join(timeout=0.2)
+
+    finished_workers = 0
+    worker_last_frames = [0 for _ in workers]
+    worker_last_infer = [0.0 for _ in workers]
+
+    monitor_stop = threading.Event()
+    monitor_thread = None
+    if args.monitor_interval > 0:
+        monitor_thread = threading.Thread(target=monitor_loop, args=(args.monitor_interval, monitor_stop), daemon=True)
+        monitor_thread.start()
 
     def close_per_id_writer(track_id, track_state):
         writer = per_id_writers.pop(track_id, None)

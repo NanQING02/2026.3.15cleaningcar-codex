@@ -86,6 +86,7 @@ class InferenceManager:
         if not self.script_path.exists():
             raise RuntimeError('run_zone_detect.py not found')
         self._load_watchdog_settings_locked()
+        self._clear_heartbeat_file_locked()
         self.single_shot = self._detect_single_shot()
         if self.single_shot:
             self._append_log('[guardian] file source detected，本次推理完成后不会自动重启')
@@ -219,6 +220,16 @@ class InferenceManager:
             runtime.get('heartbeat_startup_grace_seconds', self.progress_timeout_seconds) or self.progress_timeout_seconds
         )
 
+    def _clear_heartbeat_file_locked(self):
+        if not self.heartbeat_path:
+            return
+        try:
+            if self.heartbeat_path.exists():
+                self.heartbeat_path.unlink()
+                self._append_log(f'[guardian] cleared stale heartbeat file: {self.heartbeat_path}')
+        except Exception as exc:
+            self._append_log(f'[guardian] failed to clear heartbeat file {self.heartbeat_path}: {exc}')
+
     def _check_heartbeat_locked(self, now: Optional[float] = None) -> Dict[str, object]:
         now = time.time() if now is None else float(now)
         info: Dict[str, object] = {
@@ -237,10 +248,11 @@ class InferenceManager:
             return info
 
         startup_age = max(0.0, now - self.last_start)
+        startup_in_grace = startup_age <= self.heartbeat_startup_grace_seconds
         info['startup_age_seconds'] = startup_age
         if not self.heartbeat_path.exists():
             info['reason'] = 'heartbeat_missing'
-            info['healthy'] = startup_age <= self.heartbeat_startup_grace_seconds
+            info['healthy'] = startup_in_grace
             return info
 
         info['available'] = True
@@ -257,14 +269,35 @@ class InferenceManager:
         heartbeat_ts = self._coerce_float(heartbeat.get('timestamp'))
         if heartbeat_ts is None and stat is not None:
             heartbeat_ts = stat.st_mtime
+        heartbeat_pid = heartbeat.get('pid')
+        expected_pid = self.process.pid if self.process and self.process.poll() is None else None
+        old_heartbeat = False
+        if heartbeat_ts is not None and heartbeat_ts + 1e-6 < self.last_start:
+            old_heartbeat = True
+        if expected_pid is not None and heartbeat_pid not in (None, '') and str(heartbeat_pid) != str(expected_pid):
+            old_heartbeat = True
+            info['expected_pid'] = expected_pid
+            info['heartbeat_pid'] = heartbeat_pid
+        if old_heartbeat:
+            info['old_heartbeat_detected'] = True
+            if startup_in_grace:
+                info['reason'] = 'starting'
+                return info
+            info['healthy'] = False
+            info['reason'] = 'heartbeat_pid_mismatch'
+            return info
+
         if heartbeat_ts is not None:
             heartbeat_age = max(0.0, now - heartbeat_ts)
             info['heartbeat_age_seconds'] = heartbeat_age
             if heartbeat_age > self.heartbeat_timeout_seconds:
+                if startup_in_grace:
+                    info['reason'] = 'starting'
+                    return info
                 info['healthy'] = False
                 info['reason'] = 'heartbeat_stale'
                 return info
-        elif startup_age > self.heartbeat_startup_grace_seconds:
+        elif not startup_in_grace:
             info['healthy'] = False
             info['reason'] = 'heartbeat_timestamp_missing'
             return info
@@ -273,11 +306,11 @@ class InferenceManager:
         if last_progress_ts is not None:
             progress_age = max(0.0, now - last_progress_ts)
             info['progress_age_seconds'] = progress_age
-            if startup_age > self.heartbeat_startup_grace_seconds and progress_age > self.progress_timeout_seconds:
+            if not startup_in_grace and progress_age > self.progress_timeout_seconds:
                 info['healthy'] = False
                 info['reason'] = 'progress_stale'
                 return info
-        elif startup_age > self.heartbeat_startup_grace_seconds:
+        elif not startup_in_grace:
             info['healthy'] = False
             info['reason'] = 'progress_missing'
             return info
