@@ -323,7 +323,7 @@ def restart_inference(key: Optional[str] = None):
 def set_auto_restart(enable: bool = True, key: Optional[str] = None):
     mgr = _get_inference_manager_for_key(key or state.CONFIG_PATH.name)
     mgr.set_auto_restart(enable)
-    return {"auto_restart": enable}
+    return mgr.status()
 
 
 @app.get("/inference/status")

@@ -1,18 +1,21 @@
 # models 目录说明
 
-本目录只保留当前运行主链路实际使用的模型。
+本目录只保留当前主链路实际使用的模型。
 
-## 当前运行模型
+## 当前实际使用
 
 - `detection/best.rknn`
-  - 当前主检测模型
-  - 运行时后处理支持 `video.fp_output_mode=6|9`
+  - 主检测模型
+  - 后处理支持 `video.fp_output_mode=6|9`
+
 - `plate/plate_detect.rknn`
-  - 车牌检测模型
+  - 双模型车牌检测模型
+
 - `plate/plate_rec_color.rknn`
-  - 车牌字符和颜色识别模型
+  - 双模型车牌字符/颜色识别模型
 
-## 约束
+## 当前策略
 
-- 历史模型不要继续放在这里
-- 如需保留旧模型，请移动到 `future_modules/legacy_models/`
+- 当前主链路只保留双模型车牌流程
+- 旧单模型 `lpr.rknn` / `lprnet.rknn` 不再参与运行
+- 如需保留历史模型，请放到 `future_modules/legacy_models/`

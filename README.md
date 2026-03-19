@@ -96,6 +96,13 @@ python run_zone_detect.py --config configs/config.json --fp_output_mode 6
 python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 ```
 
+## 本地文件视频策略
+
+- 本地文件视频会优先被识别为 `file` 源，即使旧配置里写了 `source_mode: camera`
+- 默认只跑一遍，读到 EOF 后退出
+- 只有在 Web 面板手动勾选“自动重启”后，才会循环重新开始
+- Web 面板点击“停止”不会清空当前自动重启勾选状态
+
 ## 快速启动
 
 ### 方式 1：脚本启动

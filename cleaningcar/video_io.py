@@ -255,19 +255,23 @@ def create_video_reader(path, args):
     return cap
 
 
-def detect_source_mode(path, override='auto'):
+def detect_source_mode(path, override='auto', base_dir=None):
     mode = (override or 'auto').lower()
-    if mode in ('camera', 'file'):
-        return mode
     if isinstance(path, str):
-        lower = path.lower()
-        if lower.startswith(('rtsp://', 'rtsp:', 'rtmp://', 'rtp://', 'http://', 'https://')):
+        lower = path.lower().strip()
+        if lower.startswith(('rtsp://', 'rtsp:', 'rtmp://', 'rtp://', 'rtsps://', 'http://', 'https://')):
             return 'camera'
         try:
-            if Path(path).exists():
+            candidate = Path(path).expanduser()
+            if not candidate.is_absolute():
+                root = Path(base_dir) if base_dir is not None else Path.cwd()
+                candidate = (root / candidate).resolve()
+            if candidate.is_file():
                 return 'file'
         except OSError:
             pass
+    if mode == 'file':
+        return 'file'
     return 'camera'
 
 

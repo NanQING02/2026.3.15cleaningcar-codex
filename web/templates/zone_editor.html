@@ -129,6 +129,7 @@
           <label>
             <input type="checkbox" v-model="inferenceAutoRestart" @change="setAutoRestart" /> 自动重启
           </label>
+          <p class="hint">本地文件视频默认单次跑完即停止。只有手动勾选“自动重启”后，才会循环重新开始检测；点击“停止”不会改写当前勾选状态。</p>
           <div>
             <button @click="startInference" :disabled="busy">启动</button>
             <button class="secondary" @click="stopInference" :disabled="busy">停止</button>
@@ -692,6 +693,9 @@
             const key = encodeURIComponent(this.activeInferenceKey);
             const res = await fetch(`/inference/auto_restart?enable=${enabled}&key=${key}`, { method: 'POST' });
             if (!res.ok) throw new Error('设置自动重启失败');
+            const data = await res.json();
+            this.inferenceStatus = data;
+            this.inferenceAutoRestart = !!data.auto_restart;
             this.status = `自动重启 ${this.inferenceAutoRestart ? '已开启' : '已关闭'}`;
           } catch (err) {
             this.inferenceAutoRestart = prev;

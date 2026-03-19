@@ -67,13 +67,14 @@ def process_video(path, args):
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     config = getattr(args, '_config', load_config(None))
+    base_dir = getattr(args, '_config_dir', Path.cwd())
     video_cfg = config.get('video', {})
     logic_cfg = config.get('logic', {})
     system_cfg = config.get('system', {})
     reader_fail_threshold = max(1, int(config.get('reader_fail_threshold', 5)))
     reader_reconnect_delay = max(0.0, float(config.get('reader_reconnect_delay', 2.0)))
     reader_max_reconnect = max(0, int(config.get('reader_max_reconnect', 0)))
-    source_mode = detect_source_mode(path, getattr(args, 'source_mode', 'auto'))
+    source_mode = detect_source_mode(path, getattr(args, 'source_mode', 'auto'), base_dir=base_dir)
     is_file_input = (source_mode == 'file')
     if is_file_input:
         reader_max_reconnect = 0
@@ -83,7 +84,6 @@ def process_video(path, args):
     consecutive_fails = 0
     reconnect_count = 0
 
-    base_dir = getattr(args, '_config_dir', Path.cwd())
     metrics_path_conf = system_cfg.get('metrics_path', '/dev/shm/cleaningcar_metrics.json')
     metrics_path = None
     if metrics_path_conf:

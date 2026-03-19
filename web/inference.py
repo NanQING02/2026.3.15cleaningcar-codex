@@ -19,10 +19,12 @@ class InferenceManager:
         self.script_path = Path(script_path)
         self.config_path = Path(config_path)
         self.process: Optional[subprocess.Popen] = None
+        self.file_source = False
         self.single_shot = False
         self.lock = threading.Lock()
         self.desired = False
         self.auto_restart = True
+        self.auto_restart_user_set = False
         self.restart_count = 0
         self.last_start: Optional[float] = None
         self.last_exit: Optional[Dict[str, float]] = None
@@ -87,9 +89,12 @@ class InferenceManager:
             raise RuntimeError('run_zone_detect.py not found')
         self._load_watchdog_settings_locked()
         self._clear_heartbeat_file_locked()
-        self.single_shot = self._detect_single_shot()
-        if self.single_shot:
-            self._append_log('[guardian] file source detected，本次推理完成后不会自动重启')
+        self._sync_source_policy_locked()
+        if self.file_source:
+            if self.auto_restart:
+                self._append_log('[guardian] file source detected，自动重启已开启，跑完整个文件后会重新开始')
+            else:
+                self._append_log('[guardian] file source detected，自动重启默认关闭，本次推理完成后将停止')
         cmd = [sys.executable, str(self.script_path), "--config", str(self.config_path)]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         self.process = proc
@@ -124,6 +129,7 @@ class InferenceManager:
 
     def start(self):
         with self.lock:
+            self._sync_source_policy_locked()
             self.desired = True
             if not self.process or self.process.poll() is not None:
                 self._launch_locked()
@@ -132,12 +138,12 @@ class InferenceManager:
     def stop(self):
         with self.lock:
             self.desired = False
-            self.auto_restart = False
             self._terminate_locked()
         return self.status()
 
     def restart(self):
         with self.lock:
+            self._sync_source_policy_locked()
             self.desired = True
             self._terminate_locked()
             self._launch_locked()
@@ -146,10 +152,13 @@ class InferenceManager:
     def set_auto_restart(self, enabled: bool):
         with self.lock:
             self.auto_restart = bool(enabled)
+            self.auto_restart_user_set = True
+            self.single_shot = bool(self.file_source and not self.auto_restart)
         self._append_log(f'[guardian] auto_restart set to {enabled}')
 
     def status(self):
         with self.lock:
+            self._sync_source_policy_locked()
             running = bool(self.process and self.process.poll() is None)
             pid = self.process.pid if running else None
             last_start = self.last_start
@@ -157,6 +166,8 @@ class InferenceManager:
             restart_count = self.restart_count
             auto_restart = self.auto_restart
             heartbeat = dict(self.last_heartbeat_status)
+            file_source = self.file_source
+            single_shot = self.single_shot
         status = {
             'running': running,
             'pid': pid,
@@ -164,7 +175,8 @@ class InferenceManager:
             'last_exit': last_exit,
             'restart_count': restart_count,
             'auto_restart': auto_restart,
-            'single_shot': self.single_shot,
+            'file_source': file_source,
+            'single_shot': single_shot,
             'heartbeat': heartbeat,
         }
         return status
@@ -178,11 +190,12 @@ class InferenceManager:
             result.append({'timestamp': datetime.fromtimestamp(ts).isoformat(timespec='seconds'), 'line': line})
         return result
 
-    def _detect_single_shot(self) -> bool:
+    def _detect_file_source_locked(self, log_error: bool = False) -> bool:
         try:
             cfg = ConfigManager(self.config_path)
         except ConfigError as exc:
-            self._append_log(f'[guardian] config error: {exc}')
+            if log_error:
+                self._append_log(f'[guardian] config error: {exc}')
             return False
         video_cfg = cfg.video
         source = str(video_cfg.get('source', '')).strip()
@@ -191,13 +204,21 @@ class InferenceManager:
         lowered = source.lower()
         if lowered.startswith(('rtsp://', 'rtmp://', 'rtp://', 'rtsps://', 'http://', 'https://')):
             return False
-        mode = str(video_cfg.get('source_mode', '')).lower()
-        if mode == 'file':
+        candidate = Path(source).expanduser()
+        if not candidate.is_absolute():
+            candidate = (self.config_path.parent / candidate).resolve()
+        if candidate.is_file():
             return True
+        mode = str(video_cfg.get('source_mode', '')).lower()
         if mode == 'camera':
             return False
-        candidate = Path(source).expanduser()
-        return candidate.is_file()
+        return mode == 'file'
+
+    def _sync_source_policy_locked(self):
+        self.file_source = self._detect_file_source_locked()
+        if not self.auto_restart_user_set:
+            self.auto_restart = not self.file_source
+        self.single_shot = bool(self.file_source and not self.auto_restart)
 
     @staticmethod
     def _coerce_float(value) -> Optional[float]:
@@ -321,8 +342,10 @@ class InferenceManager:
     def _monitor_loop(self):
         while not self.shutdown.is_set():
             with self.lock:
+                self._sync_source_policy_locked()
                 desired = self.desired
                 auto_restart = self.auto_restart
+                file_source = self.file_source
             if desired:
                 should_launch = False
                 with self.lock:
@@ -334,10 +357,10 @@ class InferenceManager:
                             self._append_log(f'[guardian] process exited with code {code}')
                             self.last_exit = {'time': time.time(), 'code': code}
                             self.process = None
-                            if self.single_shot:
+                            if file_source and not auto_restart:
                                 should_launch = False
                                 self.desired = False
-                                self._append_log('[guardian] 单次文件源运行完成，等待手动启动')
+                                self._append_log('[guardian] 本地文件源已跑完一遍，自动重启未开启，等待手动启动')
                                 self.single_shot = False
                             else:
                                 should_launch = auto_restart
@@ -348,7 +371,7 @@ class InferenceManager:
                                 reason = heartbeat.get('reason', 'unknown')
                                 self._append_log(f'[guardian] unhealthy heartbeat detected: {reason}')
                                 self._terminate_locked()
-                                if self.single_shot:
+                                if file_source and not auto_restart:
                                     self.desired = False
                                     self.single_shot = False
                                 else:
@@ -378,6 +401,7 @@ class InferenceManager:
         with self.lock:
             self.config_path = Path(path)
             self._load_watchdog_settings_locked()
+            self._sync_source_policy_locked()
 
 
 INFERENCE_MANAGERS: Dict[str, InferenceManager] = {}
