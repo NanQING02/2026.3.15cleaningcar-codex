@@ -5,10 +5,8 @@ import numpy as np
 
 REG_MAX = 16
 PROJECT = np.arange(REG_MAX, dtype=np.float32)
-STRIDES = [8, 16, 32]
 LICENSE_CLASS = 8
 PLATE_SIZE = (94, 24)
-PLATE_EXPAND_DEFAULT = 0.25
 CLASS_NAMES = [
     'car',
     'blue truck',
@@ -79,8 +77,6 @@ FFMPEG_PIX_BYTES = {
     'bgr24': 3,
     'rgb24': 3,
 }
-ENABLE_PER_ID_LEGACY_WRITER = False
-ENABLE_DISK_CLEANER = False
 
 
 def select_box_color(label_name):

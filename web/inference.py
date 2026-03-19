@@ -9,6 +9,7 @@ from typing import Dict, Optional
 
 from fastapi import HTTPException
 
+from cleaningcar.runtime_signals import load_json_file, resolve_runtime_settings
 from config_manager import ConfigError, ConfigManager
 
 from . import state
@@ -25,6 +26,15 @@ class InferenceManager:
         self.restart_count = 0
         self.last_start: Optional[float] = None
         self.last_exit: Optional[Dict[str, float]] = None
+        self.heartbeat_path: Optional[Path] = None
+        self.heartbeat_timeout_seconds = 30.0
+        self.progress_timeout_seconds = 90.0
+        self.heartbeat_startup_grace_seconds = 90.0
+        self.last_heartbeat_status: Dict[str, object] = {
+            'available': False,
+            'healthy': True,
+            'reason': 'not_started',
+        }
         self.log_buffer = deque(maxlen=800)
         self.log_lock = threading.Lock()
         self.shutdown = threading.Event()
@@ -75,6 +85,7 @@ class InferenceManager:
     def _launch_locked(self):
         if not self.script_path.exists():
             raise RuntimeError('run_zone_detect.py not found')
+        self._load_watchdog_settings_locked()
         self.single_shot = self._detect_single_shot()
         if self.single_shot:
             self._append_log('[guardian] file source detected，本次推理完成后不会自动重启')
@@ -83,7 +94,13 @@ class InferenceManager:
         self.process = proc
         self.restart_count += 1
         self.last_start = time.time()
-        log_dir = ROOT / "logs" / "inference"
+        self.last_heartbeat_status = {
+            'available': False,
+            'healthy': True,
+            'reason': 'starting',
+            'path': str(self.heartbeat_path) if self.heartbeat_path else '',
+        }
+        log_dir = state.ROOT / "logs" / "inference"
         log_name = datetime.fromtimestamp(self.last_start).strftime("infer_%Y%m%d_%H%M%S.log")
         log_path = log_dir / log_name
         threading.Thread(target=self._capture_output, args=(proc, log_path), daemon=True).start()
@@ -138,6 +155,7 @@ class InferenceManager:
             last_exit = self.last_exit
             restart_count = self.restart_count
             auto_restart = self.auto_restart
+            heartbeat = dict(self.last_heartbeat_status)
         status = {
             'running': running,
             'pid': pid,
@@ -146,6 +164,7 @@ class InferenceManager:
             'restart_count': restart_count,
             'auto_restart': auto_restart,
             'single_shot': self.single_shot,
+            'heartbeat': heartbeat,
         }
         return status
 
@@ -179,6 +198,93 @@ class InferenceManager:
         candidate = Path(source).expanduser()
         return candidate.is_file()
 
+    @staticmethod
+    def _coerce_float(value) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _load_watchdog_settings_locked(self):
+        try:
+            cfg = ConfigManager(self.config_path)
+            runtime = resolve_runtime_settings(cfg.data, self.config_path.parent)
+        except ConfigError as exc:
+            self._append_log(f'[guardian] config error: {exc}')
+            runtime = resolve_runtime_settings({}, self.config_path.parent)
+        self.heartbeat_path = Path(runtime['heartbeat_path']) if runtime.get('heartbeat_path') else None
+        self.heartbeat_timeout_seconds = float(runtime.get('heartbeat_timeout_seconds', 30.0) or 30.0)
+        self.progress_timeout_seconds = float(runtime.get('progress_timeout_seconds', 90.0) or 90.0)
+        self.heartbeat_startup_grace_seconds = float(
+            runtime.get('heartbeat_startup_grace_seconds', self.progress_timeout_seconds) or self.progress_timeout_seconds
+        )
+
+    def _check_heartbeat_locked(self, now: Optional[float] = None) -> Dict[str, object]:
+        now = time.time() if now is None else float(now)
+        info: Dict[str, object] = {
+            'available': False,
+            'healthy': True,
+            'reason': 'disabled',
+            'path': str(self.heartbeat_path) if self.heartbeat_path else '',
+            'heartbeat_timeout_seconds': self.heartbeat_timeout_seconds,
+            'progress_timeout_seconds': self.progress_timeout_seconds,
+            'startup_grace_seconds': self.heartbeat_startup_grace_seconds,
+        }
+        if not self.heartbeat_path:
+            return info
+        if not self.last_start:
+            info['reason'] = 'not_started'
+            return info
+
+        startup_age = max(0.0, now - self.last_start)
+        info['startup_age_seconds'] = startup_age
+        if not self.heartbeat_path.exists():
+            info['reason'] = 'heartbeat_missing'
+            info['healthy'] = startup_age <= self.heartbeat_startup_grace_seconds
+            return info
+
+        info['available'] = True
+        try:
+            stat = self.heartbeat_path.stat()
+            info['file_mtime'] = stat.st_mtime
+        except OSError:
+            stat = None
+            info['file_mtime'] = None
+
+        heartbeat = load_json_file(self.heartbeat_path) or {}
+        info['heartbeat'] = heartbeat
+
+        heartbeat_ts = self._coerce_float(heartbeat.get('timestamp'))
+        if heartbeat_ts is None and stat is not None:
+            heartbeat_ts = stat.st_mtime
+        if heartbeat_ts is not None:
+            heartbeat_age = max(0.0, now - heartbeat_ts)
+            info['heartbeat_age_seconds'] = heartbeat_age
+            if heartbeat_age > self.heartbeat_timeout_seconds:
+                info['healthy'] = False
+                info['reason'] = 'heartbeat_stale'
+                return info
+        elif startup_age > self.heartbeat_startup_grace_seconds:
+            info['healthy'] = False
+            info['reason'] = 'heartbeat_timestamp_missing'
+            return info
+
+        last_progress_ts = self._coerce_float(heartbeat.get('last_progress_ts'))
+        if last_progress_ts is not None:
+            progress_age = max(0.0, now - last_progress_ts)
+            info['progress_age_seconds'] = progress_age
+            if startup_age > self.heartbeat_startup_grace_seconds and progress_age > self.progress_timeout_seconds:
+                info['healthy'] = False
+                info['reason'] = 'progress_stale'
+                return info
+        elif startup_age > self.heartbeat_startup_grace_seconds:
+            info['healthy'] = False
+            info['reason'] = 'progress_missing'
+            return info
+
+        info['reason'] = 'ok'
+        return info
+
     def _monitor_loop(self):
         while not self.shutdown.is_set():
             with self.lock:
@@ -202,6 +308,18 @@ class InferenceManager:
                                 self.single_shot = False
                             else:
                                 should_launch = auto_restart
+                        else:
+                            heartbeat = self._check_heartbeat_locked()
+                            self.last_heartbeat_status = heartbeat
+                            if not heartbeat.get('healthy', True):
+                                reason = heartbeat.get('reason', 'unknown')
+                                self._append_log(f'[guardian] unhealthy heartbeat detected: {reason}')
+                                self._terminate_locked()
+                                if self.single_shot:
+                                    self.desired = False
+                                    self.single_shot = False
+                                else:
+                                    should_launch = auto_restart
                 if should_launch:
                     try:
                         with self.lock:
@@ -226,6 +344,7 @@ class InferenceManager:
     def set_config_path(self, path: Path):
         with self.lock:
             self.config_path = Path(path)
+            self._load_watchdog_settings_locked()
 
 
 INFERENCE_MANAGERS: Dict[str, InferenceManager] = {}
@@ -253,7 +372,7 @@ def _get_inference_manager_for_key(key: str) -> InferenceManager:
         INFERENCE_MANAGERS[key] = mgr
     else:
         mgr.script_path = state.RUN_SCRIPT
-        mgr.config_path = cfg_path
+        mgr.set_config_path(cfg_path)
     return mgr
 
 

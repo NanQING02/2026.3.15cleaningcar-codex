@@ -2,26 +2,27 @@ import argparse
 import os
 from pathlib import Path
 
-from utils.disk_manager import DiskCleaner
-
-from .constants import ENABLE_DISK_CLEANER, PLATE_EXPAND_DEFAULT
-from .pipeline import process_video
 from .runtime_config import (
+    DEFAULT_CONFIG_PATH,
+    LEGACY_CONFIG_PATH,
     apply_class_thresholds_from_config,
     apply_cli_overrides,
     load_config,
 )
-from .video_io import _collect_storage_directories
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def parse_args():
     ap = argparse.ArgumentParser(description='Multithread RKNN detector demo.')
-    ap.add_argument('--model', default='1.18.fp.rknn')
+    ap.add_argument('--model', default='models/detection/best.rknn')
     ap.add_argument('--video', help='Single video file to process.')
     ap.add_argument('--video_dir', help='Directory of videos to process sequentially.')
     ap.add_argument('--imgsz', type=int, default=640)
     ap.add_argument('--conf', type=float, default=0.30)
     ap.add_argument('--iou', type=float, default=0.45)
     ap.add_argument('--max_det', type=int, default=300)
+    ap.add_argument('--fp_output_mode', choices=['6', '9'], default='6',
+                    help='FP 检测模型输出解析模式：6=只用 box+class，9=使用 box+class+score。')
     ap.add_argument('--workers', type=int, default=2, help='Number of inference workers.')
     ap.add_argument('--queue_size', type=int, default=32)
     ap.add_argument('--core_mask', default='all', help="Which NPU cores to use: e.g. '0-2', '0,2', '1', 'all', 'auto'.")
@@ -32,16 +33,12 @@ def parse_args():
     ap.add_argument('--no_draw', action='store_true', help='Do not draw boxes on frames.')
     ap.add_argument('--monitor_interval', type=float, default=0.0, help='Seconds between resource logs (0 disables).')
     ap.add_argument('--limit', type=int, default=0, help='Optional frame limit for quick tests.')
-    ap.add_argument('--lpr_model', default='lprnet.rknn', help='Path to license plate recognition RKNN.')
-    ap.add_argument('--plate_detect_model', default='plate_detect.rknn',
+    ap.add_argument('--plate_detect_model', default='models/plate/plate_detect.rknn',
                     help='Path to plate detection RKNN used by the dual-model LPR pipeline.')
-    ap.add_argument('--plate_rec_model', default='plate_rec_color.rknn',
+    ap.add_argument('--plate_rec_model', default='models/plate/plate_rec_color.rknn',
                     help='Path to plate text/color RKNN used by the dual-model LPR pipeline.')
-    ap.add_argument('--model_variant', choices=['auto', 'legacy', 'fp'], default='auto',
-                    help='Detection model postprocess mode. auto infers from model filename and outputs.')
-    ap.add_argument('--plate_expand', type=float, default=PLATE_EXPAND_DEFAULT, help='Extra ratio padding for plate crops.')
     ap.add_argument('--plate_lock_frames', type=int, default=5, help='Frames required before plate text is locked.')
-    ap.add_argument('--config', help='YAML config describing ROI/event logic.')
+    ap.add_argument('--config', default=str(DEFAULT_CONFIG_PATH), help='JSON config describing ROI/event logic.')
     ap.add_argument('--camera', help='当配置包含多个 camera 条目时，指定要运行的 key。')
     ap.add_argument('--debug_rois', action='store_true', help='Visualize stage lines on output frames.')
     ap.add_argument('--debug_tracks', action='store_true', help='Overlay per-track state info on frames.')
@@ -72,47 +69,29 @@ def iter_videos(args):
 
 def main():
     args = parse_args()
+    from .pipeline import process_video
+
     config_path = getattr(args, 'config', None)
-    config_dir = None
     if config_path:
-        try:
-            config_dir = Path(config_path).expanduser().resolve().parent
-        except Exception:
-            config_dir = Path.cwd()
+        resolved_config_path = Path(config_path).expanduser()
+        if not resolved_config_path.is_absolute():
+            resolved_config_path = (Path.cwd() / resolved_config_path).resolve()
+    else:
+        resolved_config_path = DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.exists() else LEGACY_CONFIG_PATH
     try:
-        config = load_config(config_path)
+        config = load_config(str(resolved_config_path))
     except ValueError as exc:
         print(exc)
         return
     apply_cli_overrides(args, config)
     apply_class_thresholds_from_config(config)
+    setattr(args, 'config', str(resolved_config_path))
     setattr(args, '_config', config)
-    setattr(args, '_config_dir', config_dir or Path.cwd())
+    setattr(args, '_config_path', resolved_config_path)
+    setattr(args, '_config_dir', resolved_config_path.parent)
     videos = list(iter_videos(args))
     if not videos:
         print('No videos specified.')
         return
-    disk_cleaner = None
-    storage_cfg = config.get('storage', {}) or {}
-    disk_dirs = _collect_storage_directories(config, config_dir) if ENABLE_DISK_CLEANER else []
-    if disk_dirs:
-        try:
-            threshold = float(storage_cfg.get('disk_threshold', 65.0))
-            target = float(storage_cfg.get('disk_target', max(5.0, threshold - 10.0)))
-            if target >= threshold:
-                target = max(5.0, threshold - 10.0)
-            interval = int(storage_cfg.get('clean_interval_seconds', 600))
-            root_candidate = disk_dirs[0]
-            root = Path(root_candidate.anchor or str(root_candidate))
-            disk_cleaner = DiskCleaner(root, disk_dirs, threshold=threshold, target=target,
-                                       interval_seconds=max(60, interval))
-            disk_cleaner.start()
-        except Exception as exc:
-            disk_cleaner = None
-            print(f'[disk-cleaner] init failed: {exc}')
-    try:
-        for path in videos:
-            process_video(path, args)
-    finally:
-        if disk_cleaner:
-            disk_cleaner.stop()
+    for path in videos:
+        process_video(path, args)

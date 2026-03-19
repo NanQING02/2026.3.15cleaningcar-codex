@@ -1,7 +1,9 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = ROOT / 'config.json'
+DEFAULT_CONFIG_PATH = ROOT / 'configs' / 'config.json'
+LEGACY_CONFIG_PATH = ROOT / 'config.json'
+CONFIG_PATH = DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.exists() else LEGACY_CONFIG_PATH
 TEMPLATE_PATH = ROOT / 'web' / 'templates' / 'zone_editor.html'
 RUN_SCRIPT = ROOT / 'run_zone_detect.py'
 

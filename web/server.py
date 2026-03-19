@@ -1,11 +1,15 @@
 import argparse
 import json
+from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
+
+from cleaningcar.runtime_signals import resolve_runtime_settings, write_snapshot_command
 
 from . import state
 from .helpers import (
@@ -31,29 +35,29 @@ from .models import (
     ConfigSaveAsPayload,
     ConfigSelectPayload,
     FlowVector,
+    SnapshotKeepPayload,
     ZonePayload,
 )
 
-app = FastAPI(title='CleaningCar Zone Editor')
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    try:
+        startup_default_manager()
+    except Exception as exc:
+        print(f'[server] startup: failed to init default inference manager: {exc}')
+    try:
+        yield
+    finally:
+        shutdown_all_inference_managers()
+
+
+app = FastAPI(title='CleaningCar Zone Editor', lifespan=_app_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'],
     allow_methods=['*'],
     allow_headers=['*'],
 )
-
-
-@app.on_event('startup')
-def _startup_manager():
-    try:
-        startup_default_manager()
-    except Exception as exc:
-        print(f'[server] startup: failed to init default inference manager: {exc}')
-
-
-@app.on_event('shutdown')
-def _shutdown_manager():
-    shutdown_all_inference_managers()
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -328,6 +332,36 @@ def inference_status(key: Optional[str] = None):
     return mgr.status()
 
 
+@app.get("/inference/health")
+def inference_health(key: Optional[str] = None):
+    mgr = _get_inference_manager_for_key(key or state.CONFIG_PATH.name)
+    return mgr.status()
+
+
+@app.post("/snapshot/keep")
+def keep_snapshot(payload: SnapshotKeepPayload):
+    if not payload.raw and not payload.annotated:
+        raise HTTPException(status_code=400, detail="At least one of raw/annotated must be true.")
+    cfg = _load_config()
+    runtime_settings = resolve_runtime_settings(cfg.data, cfg.path.parent)
+    command_path = write_snapshot_command(
+        runtime_settings['command_dir'],
+        {
+            'cmd': 'keep_snapshot',
+            'tag': payload.tag or 'manual',
+            'raw': bool(payload.raw),
+            'annotated': bool(payload.annotated),
+            'requested_at': datetime.now().isoformat(timespec='seconds'),
+            'requested_config': state.CONFIG_PATH.name,
+            'requested_by': 'web_api',
+        },
+    )
+    return {
+        'status': 'queued',
+        'command_file': str(command_path),
+    }
+
+
 @app.get("/logs/inference")
 def inference_logs(lines: int = 200, key: Optional[str] = None):
     mgr = _get_inference_manager_for_key(key or state.CONFIG_PATH.name)
@@ -518,7 +552,7 @@ def logs_page():
 
 def parse_args():
     parser = argparse.ArgumentParser(description='CleaningCar FastAPI server')
-    parser.add_argument('--config', default=str(state.CONFIG_PATH), help='config.json path')
+    parser.add_argument('--config', default=str(state.CONFIG_PATH), help='config path')
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=8000)
     parser.add_argument('--reload', action='store_true', help='enable uvicorn reload')

@@ -4,8 +4,23 @@ from config_manager import ConfigError, ConfigManager
 
 from .constants import CLASS_ALIAS_TO_ID, CLASS_NAMES, CLASS_THRESH
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / 'configs' / 'config.json'
+LEGACY_CONFIG_PATH = PROJECT_ROOT / 'config.json'
+
+
+def _default_config_path():
+    if DEFAULT_CONFIG_PATH.exists():
+        return DEFAULT_CONFIG_PATH
+    return LEGACY_CONFIG_PATH
+
 def load_config(path):
-    cfg_path = Path(path or 'config.json')
+    if path:
+        cfg_path = Path(path).expanduser()
+        if not cfg_path.is_absolute():
+            cfg_path = (Path.cwd() / cfg_path).resolve()
+    else:
+        cfg_path = _default_config_path()
     try:
         mgr = ConfigManager(cfg_path)
     except ConfigError as exc:
@@ -19,6 +34,8 @@ def load_config(path):
     event_capture_dir = mgr.data.get('event_capture_dir', './captures')
     event_output_dir = mgr.data.get('event_output_dir', './events')
     merged = {
+        'config_path': str(cfg_path),
+        'config_name': cfg_path.name,
         'camera_id': system.get('device_id', 'RK3588'),
         'event_capture_dir': str(Path(event_capture_dir)),
         'event_output_dir': str(Path(event_output_dir)),
@@ -26,6 +43,7 @@ def load_config(path):
         'api_token': system.get('api', {}).get('token', ''),
         'capture_mode': system.get('api', {}).get('capture_mode', 'path'),
         'monitor_interval': float(system.get('monitor_interval', 2.0)),
+        'system': system,
         'video': video,
         'logic': logic,
         'zones': zones,
@@ -67,6 +85,7 @@ def apply_cli_overrides(args, config):
     maybe_set('hw_decode', video_cfg.get('hw_decode'))
     maybe_set('workers', video_cfg.get('workers'))
     maybe_set('core_mask', video_cfg.get('core_mask'))
+    maybe_set('fp_output_mode', video_cfg.get('fp_output_mode'))
     maybe_set('save_video', video_cfg.get('save_video'))
     maybe_set('csv', video_cfg.get('csv'))
     cfg = config or {}

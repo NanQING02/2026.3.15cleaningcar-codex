@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Tuple
 
 
 class ConfigError(Exception):
-    """Raised when config.json is missing or invalid."""
+    """Raised when a config file is missing or invalid."""
 
 
 def _ensure_polygon(points: List[List[float]]) -> List[Tuple[float, float]]:
@@ -42,6 +42,15 @@ class ConfigManager:
         system['api'].setdefault('token', '')
         system['api'].setdefault('capture_mode', 'path')
         system.setdefault('metrics_path', '/dev/shm/cleaningcar_metrics.json')
+        system.setdefault('command_dir', '/dev/shm/cleaningcar_cmd')
+        system.setdefault('startup_flag_path', '/dev/shm/cleaningcar_started.flag')
+        system.setdefault('heartbeat_path', '/dev/shm/cleaningcar_heartbeat.json')
+        system.setdefault('heartbeat_interval_seconds', 1.0)
+        system.setdefault('heartbeat_timeout_seconds', 30.0)
+        system.setdefault('progress_timeout_seconds', 90.0)
+        system.setdefault('heartbeat_startup_grace_seconds', 90.0)
+        system.setdefault('startup_capture_dir', 'captures/startup')
+        system.setdefault('manual_capture_dir', 'captures/manual')
         system.setdefault('cpu_mask', '')
 
         video = self.data.setdefault('video', {})
@@ -51,6 +60,7 @@ class ConfigManager:
         video.setdefault('hw_decode', False)
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')
+        video.setdefault('fp_output_mode', '6')
         video.setdefault('save_video', '')
         video.setdefault('csv', '')
         video.setdefault('debug_frame_path', '/dev/shm/cleaningcar_debug.jpg')

@@ -26,3 +26,9 @@ class ConfigSelectPayload(BaseModel):
 class ConfigSaveAsPayload(BaseModel):
     name: str
     data: Dict
+
+
+class SnapshotKeepPayload(BaseModel):
+    tag: Optional[str] = "manual"
+    raw: bool = True
+    annotated: bool = True

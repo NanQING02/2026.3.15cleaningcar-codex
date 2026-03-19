@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Sequence, Tuple, Optional
+from typing import Dict, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -53,6 +53,10 @@ def _softmax(x: np.ndarray, axis: int):
     return ex / np.sum(ex, axis=axis, keepdims=True)
 
 
+def _sigmoid(x: np.ndarray):
+    return 1.0 / (1.0 + np.exp(-x))
+
+
 def _dfl(position: np.ndarray):
     # position: [N, C, H, W], C = 4 * bins
     n, c, h, w = position.shape
@@ -73,7 +77,7 @@ def _box_process(position: np.ndarray, img_size: Tuple[int, int]):
     row = row.reshape(1, 1, grid_h, grid_w).astype(np.float32)
     grid = np.concatenate((col, row), axis=1)
 
-    # Keep same stride convention as run_rknn_lite_annotate.py
+    # Match the validated FP RKNN model output layout and stride mapping.
     stride = np.array([img_size[1] // grid_h, img_size[0] // grid_w], dtype=np.float32).reshape(1, 2, 1, 1)
 
     position = _dfl(position)
@@ -132,18 +136,95 @@ def deletterbox_boxes(boxes: Optional[np.ndarray], info: LetterboxInfo):
 
 class FpModelPostprocessor:
     """
-    Reusable fp-model postprocessor aligned to run_rknn_lite_annotate.py:
+    Reusable postprocessor for the active FP detection model:
     - black padding letterbox (pad=0)
-    - 6 RKNN outputs (3 branches, each branch: box + cls)
+    - compatible with both 6-output and 9-output RKNN layouts
     - DFL decode + class-wise NMS
     """
 
     needs_black_padding = True
 
-    def __init__(self, img_size: Tuple[int, int] = (640, 640), obj_thresh: float = 0.25, nms_thresh: float = 0.45):
+    def __init__(
+        self,
+        img_size: Tuple[int, int] = (640, 640),
+        obj_thresh: float = 0.25,
+        nms_thresh: float = 0.45,
+        output_mode: str = "6",
+        num_classes: int = 9,
+    ):
         self.img_size = tuple(img_size)
         self.obj_thresh = float(obj_thresh)
         self.nms_thresh = float(nms_thresh)
+        self.num_classes = int(num_classes)
+        self.output_mode = self._normalize_output_mode(output_mode)
+
+    @staticmethod
+    def _normalize_output_mode(output_mode: str) -> str:
+        text = str(output_mode or "6").strip().lower()
+        aliases = {
+            "6": "6",
+            "box_class": "6",
+            "box+class": "6",
+            "9": "9",
+            "box_class_score": "9",
+            "box+class+score": "9",
+        }
+        if text not in aliases:
+            raise ValueError(f"Unsupported fp output mode: {output_mode}")
+        return aliases[text]
+
+    def describe_mode(self) -> str:
+        if self.output_mode == "9":
+            return "9-output(box+class+score)"
+        return "6-output(box+class)"
+
+    def _classify_output_branch(self, arr: np.ndarray) -> str:
+        channels = int(arr.shape[1])
+        if channels == self.num_classes:
+            return "class"
+        if channels == 1:
+            return "score"
+        if channels % 4 == 0 and channels >= 16:
+            return "box"
+        raise ValueError(f"Unsupported output branch channels: {arr.shape}")
+
+    def _group_outputs(self, outputs: Sequence[np.ndarray]):
+        outs = []
+        for idx, item in enumerate(outputs):
+            arr = np.asarray(item)
+            if arr.ndim != 4:
+                raise ValueError(f"Output[{idx}] must be 4D [N,C,H,W], got {arr.shape}")
+            outs.append(arr)
+
+        groups: Dict[Tuple[int, int], Dict[str, np.ndarray]] = {}
+        for arr in outs:
+            key = (int(arr.shape[2]), int(arr.shape[3]))
+            branch_name = self._classify_output_branch(arr)
+            branch_group = groups.setdefault(key, {})
+            if branch_name in branch_group:
+                raise ValueError(f"Duplicate {branch_name} branch for spatial size {key}")
+            branch_group[branch_name] = arr
+
+        scales = []
+        for key in sorted(groups.keys(), key=lambda item: item[0] * item[1], reverse=True):
+            branch_group = groups[key]
+            if "box" not in branch_group or "class" not in branch_group:
+                raise ValueError(f"Incomplete fp outputs for spatial size {key}: {sorted(branch_group.keys())}")
+            if self.output_mode == "9" and "score" not in branch_group:
+                raise ValueError(f"fp output mode=9 requires score branch for spatial size {key}")
+            scales.append(branch_group)
+        return scales
+
+    @staticmethod
+    def _normalize_score_branch(score_values: np.ndarray):
+        score_values = score_values.astype(np.float32).reshape(-1)
+        if score_values.size == 0:
+            return score_values
+        score_min = float(np.min(score_values))
+        score_max = float(np.max(score_values))
+        if score_min < 0.0 or score_max > 1.0:
+            return _sigmoid(score_values)
+        return np.clip(score_values, 0.0, 1.0)
 
     def prepare(self, frame: np.ndarray):
         """
@@ -160,25 +241,28 @@ class FpModelPostprocessor:
         Consume RKNNLite.inference() outputs and return:
         boxes, classes, scores (letterbox coordinate space).
         """
-        if len(outputs) != 6:
-            raise ValueError(f"Expected 6 outputs from fp model, got {len(outputs)}")
-
-        outs = []
-        for idx, item in enumerate(outputs):
-            arr = np.asarray(item)
-            if arr.ndim != 4:
-                raise ValueError(f"Output[{idx}] must be 4D [N,C,H,W], got {arr.shape}")
-            outs.append(arr)
+        if len(outputs) not in (6, 9):
+            raise ValueError(f"Expected 6 or 9 outputs from fp model, got {len(outputs)}")
 
         boxes = []
         class_confidences = []
-        for branch_index in range(3):
-            offset = 2 * branch_index
-            boxes.append(_box_process(outs[offset], self.img_size))
-            class_confidences.append(outs[offset + 1])
+        score_confidences = []
+        for branch_group in self._group_outputs(outputs):
+            boxes.append(_box_process(branch_group["box"], self.img_size))
+            class_confidences.append(branch_group["class"])
+            if self.output_mode == "9":
+                score_confidences.append(branch_group["score"])
 
         boxes = np.concatenate([_flatten_spatial(item) for item in boxes], axis=0)
         class_confidences = np.concatenate([_flatten_spatial(item) for item in class_confidences], axis=0)
+        if self.output_mode == "9":
+            score_values = np.concatenate([_flatten_spatial(item) for item in score_confidences], axis=0)
+            score_values = self._normalize_score_branch(score_values.reshape(-1))
+            if score_values.shape[0] != class_confidences.shape[0]:
+                raise ValueError(
+                    f"Score branch shape mismatch: score={score_values.shape[0]} class={class_confidences.shape[0]}"
+                )
+            class_confidences = class_confidences * score_values[:, None]
 
         scores = np.max(class_confidences, axis=-1)
         classes = np.argmax(class_confidences, axis=-1)
@@ -202,7 +286,7 @@ class FpModelPostprocessor:
             if len(keep_inds):
                 kept_boxes.append(class_boxes[keep_inds])
                 kept_classes.append(classes[inds][keep_inds])
-                kept_scores.append(class_scores[inds][keep_inds])
+                kept_scores.append(class_scores[keep_inds])
 
         if not kept_boxes:
             return None, None, None

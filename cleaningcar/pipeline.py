@@ -4,7 +4,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Full, Queue
 
 import cv2
 import numpy as np
@@ -27,6 +27,12 @@ from .events import EventManager, EventUploader
 from .monitoring import monitor_loop
 from .plate import PlateTextTracker
 from .runtime_config import load_config
+from .runtime_signals import (
+    load_json_file,
+    resolve_runtime_settings,
+    save_snapshot_images,
+    write_json_atomic,
+)
 from .tracking import VehicleTracker
 from .video_io import (
     FfmpegH264Writer,
@@ -77,6 +83,14 @@ def process_video(path, args):
     metrics_path = None
     if metrics_path_conf:
         metrics_path = _resolve_runtime_path(metrics_path_conf, base_dir)
+    runtime_settings = resolve_runtime_settings(config, base_dir)
+    command_dir = runtime_settings['command_dir']
+    heartbeat_path = runtime_settings['heartbeat_path']
+    startup_flag_path = runtime_settings['startup_flag_path']
+    startup_capture_dir = runtime_settings['startup_capture_dir']
+    manual_capture_dir = runtime_settings['manual_capture_dir']
+    heartbeat_interval_seconds = float(runtime_settings['heartbeat_interval_seconds'])
+    command_poll_interval = min(heartbeat_interval_seconds, 0.5)
     zones_cfg = config.get('zones', {})
     logic_cfg = config.get('logic', {})
     anchor_offset_ratio = float(logic_cfg.get('anchor_offset_ratio', 0.0))
@@ -213,12 +227,25 @@ def process_video(path, args):
     total_frames = 0
     next_frame_to_write = 0
     pending = {}
+    raw_frame_cache = {}
     finished_workers = 0
     reader_log_interval = float(config.get('reader_fps_log_interval', 10.0))
     reader_log_last_time = start
     reader_log_frames = 0
     worker_last_frames = [0 for _ in workers]
     worker_last_infer = [0.0 for _ in workers]
+    latest_raw_frame = None
+    latest_annotated_frame = None
+    latest_frame_idx = -1
+    latest_capture_ts = None
+    last_progress_ts = start
+    last_frame_read_ts = None
+    last_result_ts = None
+    last_heartbeat_write = 0.0
+    startup_emitted = False
+    last_command_poll = 0.0
+    config_path = str(getattr(args, '_config_path', config.get('config_path', '')) or '')
+    config_name = str(config.get('config_name') or (Path(config_path).name if config_path else ''))
 
     car_plate_cache = {}
     car_plate_cache_ttl = int(config.get('car_plate_cache_ttl', CAR_PLATE_CACHE_TTL))
@@ -244,6 +271,171 @@ def process_video(path, args):
     per_id_frame_stride = int(logic_cfg.get('per_id_frame_stride', 1) or 1)
     if per_id_frame_stride < 1:
         per_id_frame_stride = 1
+
+    for runtime_dir in (command_dir, heartbeat_path.parent, startup_flag_path.parent):
+        try:
+            Path(runtime_dir).mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+    try:
+        if startup_flag_path.exists():
+            startup_flag_path.unlink()
+    except Exception:
+        pass
+
+    def _safe_qsize(queue_obj):
+        try:
+            return int(queue_obj.qsize())
+        except Exception:
+            return -1
+
+    def write_heartbeat(status='running', force=False, extra=None):
+        nonlocal last_heartbeat_write
+        now = time.time()
+        if not force and (now - last_heartbeat_write) < heartbeat_interval_seconds:
+            return
+        payload = {
+            'timestamp': now,
+            'pid': os.getpid(),
+            'status': status,
+            'startup_emitted': startup_emitted,
+            'total_frames': total_frames,
+            'next_frame_to_write': next_frame_to_write,
+            'pending_results': len(pending),
+            'task_queue_size': _safe_qsize(task_q),
+            'result_queue_size': _safe_qsize(result_q),
+            'last_progress_ts': last_progress_ts,
+            'last_frame_read_ts': last_frame_read_ts,
+            'last_result_ts': last_result_ts,
+            'latest_frame_idx': latest_frame_idx,
+            'latest_capture_ts': latest_capture_ts,
+            'reconnect_count': reconnect_count,
+            'config_path': config_path,
+            'config_name': config_name,
+            'source': str(path),
+        }
+        if extra:
+            payload.update(extra)
+        try:
+            write_json_atomic(heartbeat_path, payload)
+            last_heartbeat_write = now
+        except Exception:
+            pass
+
+    def emit_startup_signal_if_needed():
+        nonlocal startup_emitted
+        if startup_emitted or latest_frame_idx < 0:
+            return
+        if latest_raw_frame is None and latest_annotated_frame is None:
+            return
+        saved = save_snapshot_images(
+            startup_capture_dir,
+            latest_frame_idx,
+            latest_raw_frame,
+            latest_annotated_frame,
+            capture_ts=latest_capture_ts,
+            tag='startup',
+            save_raw=True,
+            save_annotated=True,
+            signal_text='SYSTEM STARTED',
+        )
+        payload = {
+            'timestamp': time.time(),
+            'pid': os.getpid(),
+            'config_path': config_path,
+            'config_name': config_name,
+            'frame_idx': latest_frame_idx,
+            'source': str(path),
+            'captures': saved,
+        }
+        write_json_atomic(startup_flag_path, payload)
+        startup_emitted = True
+        print(
+            f'[startup-signal] ready frame={latest_frame_idx} '
+            f'flag={startup_flag_path} captures={saved}'
+        )
+
+    def handle_keep_snapshot(command_payload):
+        tag = command_payload.get('tag') or 'manual'
+        save_raw = bool(command_payload.get('raw', True))
+        save_annotated = bool(command_payload.get('annotated', True))
+        if not save_raw and not save_annotated:
+            raise ValueError('raw/annotated cannot both be false')
+        if latest_frame_idx < 0:
+            raise RuntimeError('no frame cached yet')
+        saved = save_snapshot_images(
+            manual_capture_dir,
+            latest_frame_idx,
+            latest_raw_frame,
+            latest_annotated_frame,
+            capture_ts=latest_capture_ts,
+            tag=tag,
+            save_raw=save_raw,
+            save_annotated=save_annotated,
+        )
+        if not saved:
+            raise RuntimeError('snapshot save failed')
+        print(f'[snapshot] kept frame={latest_frame_idx} tag={tag} files={saved}')
+        return saved
+
+    def _command_result_path(command_path, suffix):
+        name = command_path.name
+        if name.endswith('.cmd.json'):
+            name = f'{name[:-9]}.{suffix}.json'
+        else:
+            name = f'{name}.{suffix}.json'
+        return command_path.with_name(name)
+
+    def poll_runtime_commands(force=False):
+        nonlocal last_command_poll
+        now = time.time()
+        if not force and (now - last_command_poll) < command_poll_interval:
+            return
+        last_command_poll = now
+        try:
+            command_files = sorted(Path(command_dir).glob('*.cmd.json'))
+        except Exception:
+            return
+        for command_path in command_files[:20]:
+            payload = load_json_file(command_path)
+            meta = {
+                'command_file': str(command_path),
+                'handled_at': time.time(),
+                'pid': os.getpid(),
+            }
+            try:
+                if not payload:
+                    raise ValueError('invalid command payload')
+                command_name = str(payload.get('cmd', '')).strip().lower()
+                if command_name != 'keep_snapshot':
+                    raise ValueError(f'unsupported command: {command_name or "empty"}')
+                saved = handle_keep_snapshot(payload)
+                write_json_atomic(
+                    _command_result_path(command_path, 'done'),
+                    {
+                        **meta,
+                        'status': 'done',
+                        'cmd': command_name,
+                        'frame_idx': latest_frame_idx,
+                        'captures': saved,
+                    },
+                )
+            except Exception as exc:
+                write_json_atomic(
+                    _command_result_path(command_path, 'failed'),
+                    {
+                        **meta,
+                        'status': 'failed',
+                        'reason': str(exc),
+                    },
+                )
+            finally:
+                try:
+                    command_path.unlink()
+                except Exception:
+                    pass
+
+    write_heartbeat(status='starting', force=True)
 
     def close_per_id_writer(track_id, track_state):
         writer = per_id_writers.pop(track_id, None)
@@ -319,10 +511,12 @@ def process_video(path, args):
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
     def drain_results(block=True):
-        nonlocal next_frame_to_write, finished_workers, car_plate_cache, per_id_writers, enable_per_id_video
+        nonlocal next_frame_to_write, finished_workers, car_plate_cache, per_id_writers
+        nonlocal enable_per_id_video, latest_raw_frame, latest_annotated_frame
+        nonlocal latest_frame_idx, latest_capture_ts, last_progress_ts, last_result_ts
         try:
             item = result_q.get(block=block, timeout=1 if block else 0)
-        except Exception:
+        except Empty:
             return False
         if item is None:
             finished_workers += 1
@@ -335,6 +529,7 @@ def process_video(path, args):
             pending[idx] = (frame_out, rows, det_payload, capture_ts)
             while next_frame_to_write in pending:
                 frame_out, rows, det_payload, capture_ts = pending.pop(next_frame_to_write)
+                raw_frame_for_idx = raw_frame_cache.pop(next_frame_to_write, None)
                 if capture_ts is not None:
                     try:
                         event_manager.record_frame_timing(next_frame_to_write, capture_ts, time.time())
@@ -697,6 +892,19 @@ def process_video(path, args):
                                     frame_to_write = cv2.resize(frame_to_write, (per_id_target_width, per_id_target_height))
                                 if next_frame_to_write % per_id_frame_stride == 0:
                                     writer.write(frame_to_write)
+                if raw_frame_for_idx is not None:
+                    latest_raw_frame = raw_frame_for_idx
+                elif frame_out is not None and latest_raw_frame is None:
+                    latest_raw_frame = frame_out.copy()
+                if frame_out is not None:
+                    latest_annotated_frame = frame_out.copy()
+                latest_frame_idx = next_frame_to_write
+                latest_capture_ts = capture_ts
+                last_result_ts = time.time()
+                last_progress_ts = last_result_ts
+                emit_startup_signal_if_needed()
+                poll_runtime_commands(force=True)
+                write_heartbeat(status='running')
                 if csv_writer and rows:
                     csv_writer.writerows(rows)
                 next_frame_to_write += 1
@@ -707,6 +915,8 @@ def process_video(path, args):
     frame_limit = args.limit if args.limit and args.limit > 0 else None
 
     while True:
+        poll_runtime_commands()
+        write_heartbeat(status='running')
         if frame_limit is not None and total_frames >= frame_limit:
             break
         ret, frame = cap.read()
@@ -716,11 +926,21 @@ def process_video(path, args):
                 print('[reader] local file reached EOF or failed, stopping.')
                 break
             if consecutive_fails < reader_fail_threshold:
+                write_heartbeat(
+                    status='waiting_reader',
+                    force=True,
+                    extra={'consecutive_reader_failures': consecutive_fails},
+                )
                 time.sleep(0.05)
                 continue
             reconnect_count += 1
             consecutive_fails = 0
             print(f'[reader] capture stalled, reconnect attempt #{reconnect_count}')
+            write_heartbeat(
+                status='reader_reconnect',
+                force=True,
+                extra={'reconnect_attempt': reconnect_count},
+            )
             try:
                 cap.release()
             except Exception:
@@ -728,6 +948,7 @@ def process_video(path, args):
             time.sleep(reader_reconnect_delay)
             cap = create_video_reader(path, args)
             if cap and hasattr(cap, 'isOpened') and cap.isOpened():
+                write_heartbeat(status='running', force=True)
                 continue
             print('[reader] reconnect failed.')
             if reader_max_reconnect and reconnect_count >= reader_max_reconnect:
@@ -737,7 +958,20 @@ def process_video(path, args):
             continue
         consecutive_fails = 0
         capture_ts = time.time()
-        task_q.put((total_frames, frame, capture_ts))
+        latest_raw_frame = frame.copy()
+        latest_frame_idx = total_frames
+        latest_capture_ts = capture_ts
+        last_frame_read_ts = capture_ts
+        last_progress_ts = capture_ts
+        raw_frame_cache[total_frames] = latest_raw_frame
+        while True:
+            try:
+                task_q.put((total_frames, frame, capture_ts), timeout=0.5)
+                break
+            except Full:
+                drain_results(block=False)
+                poll_runtime_commands(force=True)
+                write_heartbeat(status='backpressure', force=True)
         total_frames += 1
         reader_log_frames += 1
         now = time.time()
@@ -769,11 +1003,21 @@ def process_video(path, args):
         while result_q.qsize() > args.queue_size // 2:
             drain_results(block=False)
 
+    write_heartbeat(status='stopping', force=True)
     for _ in workers:
-        task_q.put(None)
+        while True:
+            try:
+                task_q.put(None, timeout=0.5)
+                break
+            except Full:
+                drain_results(block=False)
+                poll_runtime_commands(force=True)
+                write_heartbeat(status='stopping', force=True)
     task_q.join()
     while finished_workers < len(workers):
-        drain_results(block=True)
+        if not drain_results(block=True):
+            poll_runtime_commands(force=True)
+            write_heartbeat(status='draining', force=True)
 
     if enable_per_id_video and per_id_writers:
         for tid in list(per_id_writers.keys()):
@@ -794,6 +1038,7 @@ def process_video(path, args):
         uploader.close()
 
     elapsed = time.time() - start
+    write_heartbeat(status='stopped', force=True, extra={'elapsed_seconds': elapsed})
     if total_frames:
         print(f'Video {path}: frames={total_frames} elapsed={elapsed:.2f}s ({total_frames/elapsed:.2f} FPS)')
     agg_frames = sum(w.frames for w in workers)
