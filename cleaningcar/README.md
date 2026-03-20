@@ -1,12 +1,12 @@
-# cleaningcar 模块说明
+﻿# cleaningcar 模块说明
 
-`cleaningcar/` 是项目主运行包，负责把视频输入、RKNN 推理、车牌识别、跟踪、事件、截图、运行信号和守护配合起来。
+`cleaningcar/` 是项目主运行包，负责把视频输入、RKNN 推理、车牌识别、跟踪、事件、截图、运行信号、清理策略和守护协作起来。
 
 ## 模块职责
 
 - `constants.py`
   - 定义类别列表、类别阈值、车牌字符表、颜色常量和业务映射
-  - 现在项目内统一以这里的车牌字符定义为准
+  - 当前项目内统一以这里的车牌字符定义为准
 
 - `runtime_config.py`
   - 读取配置并生成运行时配置
@@ -32,7 +32,7 @@
   - 车牌文本规范化
   - 合法性校验
   - 车牌锁定辅助
-  - 这里只做文本后处理和锁定，不负责旧 `lpr.rknn` 单模型推理
+  - 不负责旧 `lpr.rknn` 单模型推理
 
 - `text_render.py`
   - 统一中文文本渲染层
@@ -44,24 +44,29 @@
 
 - `events.py`
   - 负责事件状态机、事件 JSON、事件截图和事件上报
-  - 事件截图现已收口为“只有真实落盘成功才写入路径”
+  - 事件截图只有真实落盘成功才写入 `captureImage`
+
+- `runtime_signals.py`
+  - 输出心跳文件、启动标志、启动截图、手动截图
+
+- `storage_cleanup.py`
+  - 运行期清理模块
+  - 周期清理截图与单车视频
+  - 支持按天数 + 按数量保留
+
+- `monitoring.py`
+  - 输出 CPU、内存、温度等运行监控信息
 
 - `worker.py`
   - 每个 RKNN worker 线程负责：
     - 检测模型推理
     - 检测后处理
     - 双模型车牌识别
-    - 车牌框与车牌文本叠字
-
-- `runtime_signals.py`
-  - 输出心跳文件、启动标志、启动截图、手动截图
-
-- `monitoring.py`
-  - 输出 CPU、内存、温度等运行监控信息
+    - 叠框与叠字
 
 - `pipeline.py`
   - 主流程总调度层
-  - 负责把读流、worker、跟踪、事件、截图、命令处理和单车视频串起来
+  - 负责把读流、worker、跟踪、事件、截图、命令处理、单车视频和清理策略串起来
 
 - `cli.py`
   - 命令行入口
@@ -75,7 +80,7 @@
 4. `cleaningcar/worker.py`
 5. `cleaningcar/fp_detect.py` + `cleaningcar/plate_lpr.py`
 6. `cleaningcar/tracking.py` + `cleaningcar/events.py`
-7. `cleaningcar/runtime_signals.py`
+7. `cleaningcar/runtime_signals.py` + `cleaningcar/storage_cleanup.py`
 
 ## 主链路依赖图
 
@@ -92,34 +97,37 @@ flowchart TD
     D --> I["cleaningcar/runtime_signals.py"]
     D --> J["cleaningcar/monitoring.py"]
     D --> K["cleaningcar/vision.py"]
+    D --> L["cleaningcar/storage_cleanup.py"]
 
-    F --> L["cleaningcar/fp_detect.py"]
-    F --> M["cleaningcar/plate_lpr.py"]
-    F --> N["cleaningcar/plate.py"]
-    F --> O["cleaningcar/text_render.py"]
+    F --> M["cleaningcar/fp_detect.py"]
+    F --> N["cleaningcar/plate_lpr.py"]
+    F --> O["cleaningcar/plate.py"]
+    F --> P["cleaningcar/text_render.py"]
 
-    L --> P["cleaningcar/constants.py"]
-    M --> P
-    N --> P
-    H --> N
+    M --> Q["cleaningcar/constants.py"]
+    N --> Q
+    O --> Q
+    H --> O
     H --> I
     G --> K
-    M --> K
+    N --> K
 ```
 
 说明：
 
-- `pipeline.py` 是主调度中心，负责把读流、推理、跟踪、事件和运行信号串起来
+- `pipeline.py` 是主调度中心，负责把读流、推理、跟踪、事件、运行信号和清理策略串起来
 - `worker.py` 是检测与双模型车牌识别的执行层
 - `plate_lpr.py` 负责双模型车牌推理，`plate.py` 只负责文本后处理和锁定
 - `runtime_signals.py` 独立负责心跳、启动标志、启动截图和手动截图
+- `storage_cleanup.py` 独立负责运行产物保留策略，不影响主检测链路
 
-## 本轮模块级改动
+## 当前模块级改动收口
 
 - 车牌字符表统一到了 `constants.py`
 - 中文显示新增 `text_render.py`
-- 事件截图失败日志与真实落盘校验收到了 `events.py`
-- 当前主链路只保留双模型车牌流程，旧单模型 LPR 仅作为历史资料保留在 `future_modules/legacy_lpr/`
+- 事件截图真实落盘校验收到了 `events.py`
+- 运行期清理独立到了 `storage_cleanup.py`
+- 当前主链路只保留双模型车牌流程，旧单模型 LPR 仅保留在 `future_modules/legacy_lpr/`
 
 ## 建议阅读顺序
 
@@ -131,4 +139,5 @@ flowchart TD
 6. `plate.py`
 7. `events.py`
 8. `runtime_signals.py`
-9. `text_render.py`
+9. `storage_cleanup.py`
+10. `text_render.py`

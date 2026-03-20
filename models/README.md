@@ -19,3 +19,10 @@
 - 当前主链路只保留双模型车牌流程
 - 旧单模型 `lpr.rknn` / `lprnet.rknn` 不再参与运行
 - 如需保留历史模型，请放到 `future_modules/legacy_models/`
+
+## 子目录说明
+
+- `detection/README.md`
+  - 检测模型目录说明
+- `plate/README.md`
+  - 车牌双模型目录说明

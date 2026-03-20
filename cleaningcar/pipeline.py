@@ -33,6 +33,7 @@ from .runtime_signals import (
     save_snapshot_images,
     write_json_atomic,
 )
+from .storage_cleanup import RetentionPolicy, RuntimeStorageCleaner
 from .text_render import draw_text
 from .tracking import VehicleTracker
 from .video_io import (
@@ -96,6 +97,7 @@ def process_video(path, args):
     manual_capture_dir = runtime_settings['manual_capture_dir']
     heartbeat_interval_seconds = float(runtime_settings['heartbeat_interval_seconds'])
     command_poll_interval = min(heartbeat_interval_seconds, 0.5)
+    storage_cfg = config.get('storage', {}) or {}
     zones_cfg = config.get('zones', {})
     logic_cfg = config.get('logic', {})
     anchor_offset_ratio = float(logic_cfg.get('anchor_offset_ratio', 0.0))
@@ -384,6 +386,75 @@ def process_video(path, args):
         if per_id_video_dir is None:
             enable_per_id_video = False
 
+    def collect_per_id_cleanup_roots():
+        roots = [DEFAULT_PER_ID_VIDEO_DIR]
+        raw_path = str(logic_cfg.get('per_id_video_dir', '') or '').strip()
+        if raw_path:
+            configured_dir = _resolve_runtime_path(raw_path, PROJECT_ROOT)
+            if configured_dir:
+                roots.insert(0, configured_dir)
+        unique = []
+        seen = set()
+        for root in roots:
+            resolved = Path(root).resolve()
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(resolved)
+        return unique
+
+    cleanup_policies = []
+    capture_keep_days = int(storage_cfg.get('capture_keep_days', 30) or 0)
+    capture_keep_count = int(storage_cfg.get('capture_keep_count', 3000) or 0)
+    per_id_video_keep_days = int(storage_cfg.get('per_id_video_keep_days', 15) or 0)
+    per_id_video_keep_count = int(storage_cfg.get('per_id_video_keep_count', 500) or 0)
+    event_capture_dir = _resolve_runtime_path(config.get('event_capture_dir'), base_dir)
+    if event_capture_dir:
+        cleanup_policies.append(
+            RetentionPolicy(
+                root=event_capture_dir,
+                keep_days=capture_keep_days,
+                keep_count=capture_keep_count,
+                label='event-captures',
+            )
+        )
+    if startup_capture_dir:
+        cleanup_policies.append(
+            RetentionPolicy(
+                root=startup_capture_dir,
+                keep_days=capture_keep_days,
+                keep_count=capture_keep_count,
+                label='startup-captures',
+                preserve_latest_groups=1,
+                snapshot_grouping=True,
+            )
+        )
+    if manual_capture_dir:
+        cleanup_policies.append(
+            RetentionPolicy(
+                root=manual_capture_dir,
+                keep_days=capture_keep_days,
+                keep_count=capture_keep_count,
+                label='manual-captures',
+                preserve_latest_groups=1,
+                snapshot_grouping=True,
+            )
+        )
+    for cleanup_root in collect_per_id_cleanup_roots():
+        cleanup_policies.append(
+            RetentionPolicy(
+                root=cleanup_root,
+                keep_days=per_id_video_keep_days,
+                keep_count=per_id_video_keep_count,
+                label='per-id-video',
+            )
+        )
+    storage_cleaner = RuntimeStorageCleaner(
+        cleanup_policies,
+        int(storage_cfg.get('clean_interval_seconds', 600) or 600),
+    )
+
     for runtime_dir in (command_dir, heartbeat_path.parent, startup_flag_path.parent):
         try:
             Path(runtime_dir).mkdir(parents=True, exist_ok=True)
@@ -575,6 +646,7 @@ def process_video(path, args):
                 except Exception:
                     pass
 
+    storage_cleaner.run_once(reason='startup')
     write_heartbeat(status='starting', force=True)
 
     startup_heartbeat_stop = threading.Event()
@@ -1096,6 +1168,7 @@ def process_video(path, args):
     while True:
         poll_runtime_commands()
         write_heartbeat(status='running')
+        storage_cleaner.run_due(reason='periodic')
         if frame_limit is not None and total_frames >= frame_limit:
             break
         ret, frame = cap.read()

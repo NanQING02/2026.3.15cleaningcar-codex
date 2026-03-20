@@ -12,6 +12,14 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Res
 from cleaningcar.runtime_signals import resolve_runtime_settings, write_snapshot_command
 
 from . import state
+from .config_tiers import (
+    ConfigTierError,
+    TIER_DEVELOPER,
+    TIER_USER,
+    extract_tier_subset,
+    merge_tier_payload,
+    schema_payload,
+)
 from .helpers import (
     _available_config_files,
     _capture_frame,
@@ -38,6 +46,26 @@ from .models import (
     SnapshotKeepPayload,
     ZonePayload,
 )
+
+
+def _payload_dict(payload: ConfigPayload) -> dict:
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump(exclude_none=True)
+    return payload.dict(exclude_none=True)
+
+
+def _apply_config_update(payload: dict, tier: Optional[str] = None):
+    cfg = _load_config()
+    try:
+        merge_tier_payload(cfg.data, payload, tier)
+        cfg.save()
+    except ConfigTierError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"保存失败: {exc}") from exc
+    if any(key in payload for key in ("video", "zones")):
+        state.FRAME_CACHE.clear()
+    return {"status": "ok", "tier": tier or "all"}
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI):
@@ -243,6 +271,17 @@ def read_config():
     return cfg.data
 
 
+@app.get("/config/schema")
+def read_config_schema():
+    return schema_payload()
+
+
+@app.get("/config/user")
+def read_user_config():
+    cfg = _load_config()
+    return extract_tier_subset(cfg.data, TIER_USER)
+
+
 @app.post("/config/save_as")
 
 def save_config_as(payload: ConfigSaveAsPayload):
@@ -289,16 +328,17 @@ def select_config(payload: ConfigSelectPayload):
 
 @app.post("/config")
 def update_config(payload: ConfigPayload):
-    cfg = _load_config()
-    if payload.system:
-        cfg.data.setdefault("system", {}).update(payload.system)
-    if payload.video:
-        cfg.data.setdefault("video", {}).update(payload.video)
-        state.FRAME_CACHE.clear()
-    if payload.logic:
-        cfg.data.setdefault("logic", {}).update(payload.logic)
-    cfg.save()
-    return {"status": "ok"}
+    return _apply_config_update(_payload_dict(payload))
+
+
+@app.post("/config/user")
+def update_user_config(payload: ConfigPayload):
+    return _apply_config_update(_payload_dict(payload), TIER_USER)
+
+
+@app.post("/config/developer")
+def update_developer_config(payload: ConfigPayload):
+    return _apply_config_update(_payload_dict(payload), TIER_DEVELOPER)
 
 
 @app.post("/inference/start")

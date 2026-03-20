@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -14,9 +14,14 @@ class ZonePayload(BaseModel):
 
 
 class ConfigPayload(BaseModel):
-    system: Optional[Dict] = None
-    video: Optional[Dict] = None
-    logic: Optional[Dict] = None
+    system: Optional[Dict[str, Any]] = None
+    video: Optional[Dict[str, Any]] = None
+    logic: Optional[Dict[str, Any]] = None
+    zones: Optional[Dict[str, Any]] = None
+    storage: Optional[Dict[str, Any]] = None
+    event_output_dir: Optional[str] = None
+    event_capture_dir: Optional[str] = None
+    event_capture_quality: Optional[int] = None
 
 
 class ConfigSelectPayload(BaseModel):
@@ -25,7 +30,7 @@ class ConfigSelectPayload(BaseModel):
 
 class ConfigSaveAsPayload(BaseModel):
     name: str
-    data: Dict
+    data: Dict[str, Any]
 
 
 class SnapshotKeepPayload(BaseModel):

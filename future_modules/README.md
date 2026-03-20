@@ -19,3 +19,11 @@
 
 - 当前主运行链路不要直接依赖这里的代码
 - 当前 FP 检测后处理切换能力已经在主链路中完成，不依赖此目录
+
+## 子目录说明
+
+- `acceleration/README.md`
+- `legacy_detection/README.md`
+- `legacy_lpr/README.md`
+- `legacy_models/README.md`
+- `unused_utils/README.md`

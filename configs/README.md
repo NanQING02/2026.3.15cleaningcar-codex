@@ -1,6 +1,6 @@
-# configs 目录说明
+﻿# configs 目录说明
 
-本目录存放项目运行配置。
+`configs/` 用于存放项目运行配置。当前建议以 `configs/config.json` 作为正式主配置，其他配置只保留为备份或场景切换。
 
 ## 当前配置文件
 
@@ -9,49 +9,79 @@
 - `config_绕行.json`
   - 备用 / 绕行配置
 
-## 重要配置项
+## 重点配置项
+
+### `video.source` / `video.source_mode`
+
+- `video.source`：视频源地址，可以是 RTSP、摄像头索引或本地文件
+- `video.source_mode`：建议优先用 `auto`
+- 当输入被识别为本地文件时，会按文件源处理，默认跑完一遍后退出
 
 ### `video.fp_output_mode`
 
-FP 检测模型输出解析模式：
+FP 检测模型后处理模式：
 
 - `6`
   - 默认值
-  - 即使模型有 `9` 个输出，也只取 `box + class`
+  - 即使模型给出 `9` 个输出，也只使用每个尺度的 `box + class`
 - `9`
-  - 使用 `box + class + score`
+  - 使用每个尺度的 `box + class + score`
 
-### 其他常用配置
+### `logic.per_id_video_dir`
 
-- `video.source`
-- `video.source_mode`
-- `video.workers`
-- `video.core_mask`
-- `video.debug_frame_path`
-- `system.command_dir`
-- `system.heartbeat_path`
-- `system.startup_flag_path`
+- 单车视频输出目录
+- 留空、只填空白、或目录不可写时，会自动回退到 `video_result/per_id/`
+
+### `system.startup_capture_dir` / `system.manual_capture_dir`
+
 - `system.startup_capture_dir`
+  - 自动启动截图目录
+  - 主流程首次真正产出结果后自动写入
 - `system.manual_capture_dir`
+  - 手动保留截图目录
+  - 对应 Web 的 `POST /snapshot/keep`
 
-## 使用方式
+### `system.heartbeat_path` / `system.startup_flag_path` / `system.command_dir`
 
-主程序：
+- `system.heartbeat_path`
+  - 推理心跳文件
+- `system.startup_flag_path`
+  - 启动成功标志文件
+- `system.command_dir`
+  - 运行期命令目录，手动截图等命令会从这里消费
+
+### `storage.*`
+
+当前已接入运行产物清理：
+
+- `storage.clean_interval_seconds`
+  - 周期清理间隔
+- `storage.capture_keep_days`
+  - 事件/启动/手动截图保留天数
+- `storage.capture_keep_count`
+  - 事件/启动/手动截图保留数量
+- `storage.per_id_video_keep_days`
+  - 单车视频保留天数
+- `storage.per_id_video_keep_count`
+  - 单车视频保留数量
+
+## 常用启动命令
 
 ```bash
+source venv-gst/bin/activate
 python run_zone_detect.py --config configs/config.json
 ```
 
-切换后处理模式：
+临时切换 FP 后处理：
 
 ```bash
 python run_zone_detect.py --config configs/config.json --fp_output_mode 6
 python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 ```
 
-Web 服务：
+手工启动 Web：
 
 ```bash
 source venv-gst/bin/activate
-python -m web.server --config configs/config.json --host 0.0.0.0 --port 8000
+./start_web_server.sh start
 ```
