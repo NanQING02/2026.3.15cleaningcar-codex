@@ -77,6 +77,43 @@
 6. `cleaningcar/tracking.py` + `cleaningcar/events.py`
 7. `cleaningcar/runtime_signals.py`
 
+## 主链路依赖图
+
+```mermaid
+flowchart TD
+    A["run_zone_detect.py"] --> B["cleaningcar/cli.py"]
+    B --> C["cleaningcar/runtime_config.py"]
+    B --> D["cleaningcar/pipeline.py"]
+
+    D --> E["cleaningcar/video_io.py"]
+    D --> F["cleaningcar/worker.py"]
+    D --> G["cleaningcar/tracking.py"]
+    D --> H["cleaningcar/events.py"]
+    D --> I["cleaningcar/runtime_signals.py"]
+    D --> J["cleaningcar/monitoring.py"]
+    D --> K["cleaningcar/vision.py"]
+
+    F --> L["cleaningcar/fp_detect.py"]
+    F --> M["cleaningcar/plate_lpr.py"]
+    F --> N["cleaningcar/plate.py"]
+    F --> O["cleaningcar/text_render.py"]
+
+    L --> P["cleaningcar/constants.py"]
+    M --> P
+    N --> P
+    H --> N
+    H --> I
+    G --> K
+    M --> K
+```
+
+说明：
+
+- `pipeline.py` 是主调度中心，负责把读流、推理、跟踪、事件和运行信号串起来
+- `worker.py` 是检测与双模型车牌识别的执行层
+- `plate_lpr.py` 负责双模型车牌推理，`plate.py` 只负责文本后处理和锁定
+- `runtime_signals.py` 独立负责心跳、启动标志、启动截图和手动截图
+
 ## 本轮模块级改动
 
 - 车牌字符表统一到了 `constants.py`

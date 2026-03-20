@@ -52,5 +52,6 @@ python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 Web 服务：
 
 ```bash
+source venv-gst/bin/activate
 python -m web.server --config configs/config.json --host 0.0.0.0 --port 8000
 ```

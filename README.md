@@ -11,7 +11,7 @@
 ## 主入口
 
 - 主检测入口：`python run_zone_detect.py --config configs/config.json`
-- Web 入口：`python -m web.server --config configs/config.json --host 0.0.0.0 --port 8000`
+- Web 入口：`source venv-gst/bin/activate && python -m web.server --config configs/config.json --host 0.0.0.0 --port 8000`
 
 ## 核心入口文件说明
 
@@ -60,7 +60,7 @@
   - 事件截图只有在真实落盘成功后才写入 `captureImage`
   - 失败时会输出明确日志：事件类型、轨迹 ID、路径、帧状态、`imwrite` 返回值、异常
 - 车牌识别字符表
-  - 以 `test_lpr_full.py` 基准字符表统一项目内部定义
+  - 以当前双模型基准字符表统一项目内部定义
   - `cleaningcar/plate_lpr.py` 和 `cleaningcar/constants.py` 现已统一
   - `cleaningcar/plate.py` 的规范化与合法性校验同步收口
 - 中文显示
@@ -154,8 +154,9 @@ python run_zone_detect.py --config configs/config.json
 ## 推荐优先阅读
 
 - `cleaningcar/README.md`
-- `docs/项目功能与使用说明.md`
-- `docs/项目解耦报告.md`
-- `docs/项目整理报告.md`
-- `docs/板端验收清单.md`
+- `docs/README.md`
+- `docs/总览说明/项目功能与使用说明.md`
+- `docs/总览说明/项目解耦报告.md`
+- `docs/总览说明/项目整理报告.md`
+- `docs/部署验收/板端验收清单.md`
 - `configs/README.md`
