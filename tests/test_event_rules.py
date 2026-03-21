@@ -63,7 +63,17 @@ def build_manager(tmp_path, fps=10.0, timeout_frames=2):
     return manager
 
 
-def update_vehicle(manager, track_id, frame_idx, anchor_point, *, water_boxes=None):
+def update_vehicle(
+    manager,
+    track_id,
+    frame_idx,
+    anchor_point,
+    *,
+    water_boxes=None,
+    vehicle_label="car",
+    vehicle_conf=0.95,
+    confirmed=True,
+):
     frame = np.zeros((40, 40, 3), dtype=np.uint8)
     manager.update_track(
         track_id,
@@ -75,10 +85,10 @@ def update_vehicle(manager, track_id, frame_idx, anchor_point, *, water_boxes=No
         water_boxes or [],
         bool(water_boxes),
         is_plate=False,
-        vehicle_label="car",
-        vehicle_conf=0.95,
+        vehicle_label=vehicle_label,
+        vehicle_conf=vehicle_conf,
         plate_conf=None,
-        confirmed=True,
+        confirmed=confirmed,
         anchor_point=anchor_point,
     )
 
@@ -93,6 +103,20 @@ def test_type3_first_water_frame_after_type2_qualification_triggers_immediately(
     state = manager.tracks[1]
     assert 2 in state["events"]
     assert 3 in state["events"]
+    assert state["wash_start_time"] == "2026-03-21 00:00:02"
+
+
+def test_type3_still_triggers_when_track_temporarily_loses_inside_b_but_water_is_visible(tmp_path):
+    manager = build_manager(tmp_path, fps=10.0)
+
+    update_vehicle(manager, 1, 0, (2, 2))
+    update_vehicle(manager, 1, 1, (8, 8))
+    update_vehicle(manager, 1, 2, (18, 18), water_boxes=[WATER_BOX])
+
+    state = manager.tracks[1]
+    assert state["type2_qualified"] is True
+    assert 3 in state["events"]
+    assert state["effective_wash_frames"] == 1
     assert state["wash_start_time"] == "2026-03-21 00:00:02"
 
 
@@ -176,3 +200,138 @@ def test_finalize_per_id_recording_keeps_valid_video_and_emits_type6(tmp_path):
     assert event_manager.calls[0][0] == 8
     assert event_manager.calls[0][1] == 6
     assert event_manager.calls[0][2] == 18
+
+
+def test_infer_plate_color_falls_back_to_vehicle_guess_without_model_output(tmp_path):
+    manager = build_manager(tmp_path)
+    state = {
+        "vehicle_cls": "blue truck",
+        "plate_color": "",
+        "plate_color_conf": 0.0,
+    }
+
+    plate_color, plate_color_conf = manager._infer_plate_color(state)
+
+    assert plate_color == "蓝色"
+    assert plate_color_conf == 0.9
+
+
+def test_infer_plate_color_keeps_dual_model_value(tmp_path):
+    manager = build_manager(tmp_path)
+    state = {
+        "vehicle_cls": "blue truck",
+        "plate_color": "黄色",
+        "plate_color_conf": 1.0,
+    }
+
+    plate_color, plate_color_conf = manager._infer_plate_color(state)
+
+    assert plate_color == "黄色"
+    assert plate_color_conf == 1.0
+
+
+def test_non_yellow_vehicle_stable_window_overrides_yellow_lock(tmp_path):
+    manager = build_manager(tmp_path, fps=10.0)
+    manager.vehicle_lock_min_votes = 100
+
+    for frame_idx in range(30):
+        update_vehicle(
+            manager,
+            1,
+            frame_idx,
+            (2, 2),
+            vehicle_label="yellow truck",
+            vehicle_conf=0.55,
+            confirmed=False,
+        )
+
+    state = manager.tracks[1]
+    assert state["vehicle_cls_locked"] == "yellow truck"
+    assert state["vehicle_cls_frozen"] is False
+
+    for frame_idx in range(30, 50):
+        update_vehicle(
+            manager,
+            1,
+            frame_idx,
+            (2, 2),
+            vehicle_label="blue truck",
+            vehicle_conf=0.62,
+            confirmed=False,
+        )
+
+    state = manager.tracks[1]
+    assert state["vehicle_cls_locked"] == "blue truck"
+    assert state["vehicle_cls"] == "blue truck"
+    assert state["vehicle_cls_frozen"] is True
+
+
+def test_non_yellow_high_confidence_streak_overrides_yellow_lock(tmp_path):
+    manager = build_manager(tmp_path, fps=10.0)
+    manager.vehicle_lock_min_votes = 100
+
+    for frame_idx in range(10):
+        update_vehicle(
+            manager,
+            1,
+            frame_idx,
+            (2, 2),
+            vehicle_label="yellow truck",
+            vehicle_conf=0.55,
+            confirmed=False,
+        )
+
+    state = manager.tracks[1]
+    assert state["vehicle_cls_locked"] == "yellow truck"
+    assert state["vehicle_cls_frozen"] is False
+
+    for frame_idx in range(10, 13):
+        update_vehicle(
+            manager,
+            1,
+            frame_idx,
+            (2, 2),
+            vehicle_label="blue truck",
+            vehicle_conf=0.92,
+            confirmed=False,
+        )
+
+    state = manager.tracks[1]
+    assert state["vehicle_cls_locked"] == "blue truck"
+    assert state["vehicle_cls"] == "blue truck"
+    assert state["vehicle_cls_frozen"] is True
+
+
+def test_non_yellow_stable_window_can_override_frozen_yellow_lock(tmp_path):
+    manager = build_manager(tmp_path, fps=10.0)
+    manager.vehicle_lock_min_votes = 100
+
+    update_vehicle(
+        manager,
+        1,
+        0,
+        (2, 2),
+        vehicle_label="yellow truck",
+        vehicle_conf=0.55,
+        confirmed=True,
+    )
+
+    state = manager.tracks[1]
+    assert state["vehicle_cls_locked"] == "yellow truck"
+    assert state["vehicle_cls_frozen"] is True
+
+    for frame_idx in range(1, 21):
+        update_vehicle(
+            manager,
+            1,
+            frame_idx,
+            (2, 2),
+            vehicle_label="blue truck",
+            vehicle_conf=0.65,
+            confirmed=False,
+        )
+
+    state = manager.tracks[1]
+    assert state["vehicle_cls_locked"] == "blue truck"
+    assert state["vehicle_cls"] == "blue truck"
+    assert state["vehicle_cls_frozen"] is True

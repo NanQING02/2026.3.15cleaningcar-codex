@@ -16,6 +16,12 @@ from .constants import VEHICLE_LABEL_CN
 from .plate import normalize_plate_text
 from .vision import box_iou, get_anchor_point
 
+YELLOW_TRUCK_LABEL = 'yellow truck'
+NON_YELLOW_OVERRIDE_LABELS = frozenset(label for label in VEHICLE_LABEL_CN.keys() if label != YELLOW_TRUCK_LABEL)
+NON_YELLOW_OVERRIDE_SECONDS = 2.0
+NON_YELLOW_HIGH_CONFIDENCE = 0.85
+NON_YELLOW_HIGH_CONF_STREAK = 3
+
 class EventUploader:
     def __init__(self, url=None, token=None, timeout=8.0, queue_path=None,
                  max_retries=10, base_delay=1.0, max_delay=60.0):
@@ -218,6 +224,9 @@ class EventManager:
             'vehicle_cls_frozen': False,
             'class_counts': {},
             'vehicle_cls_locked': '',
+            'vehicle_non_yellow_recent': deque(),
+            'vehicle_high_conf_label': '',
+            'vehicle_high_conf_count': 0,
             'last_vehicle_label': '',
             'zone_state': None,
             'last_anchor': None,
@@ -247,7 +256,11 @@ class EventManager:
             if new_area < prev_area * self.vehicle_shrink_ratio:
                 freeze_label = True
         counts = st.get('class_counts') or {}
-        if vehicle_label and not freeze_label:
+        override_label = self._get_non_yellow_vehicle_override(st, vehicle_label, vehicle_conf, frame_idx)
+        if override_label:
+            counts = self._apply_non_yellow_vehicle_override(st, counts, override_label)
+            freeze_label = True
+        elif vehicle_label and not freeze_label:
             counts[vehicle_label] = counts.get(vehicle_label, 0) + 1
             st['class_counts'] = counts
             locked, locked_count = max(counts.items(), key=lambda kv: (kv[1], kv[0]))
@@ -393,12 +406,12 @@ class EventManager:
             if st.get('type2_qualified_frame', -1) < 0:
                 st['type2_qualified_frame'] = frame_idx
 
-        water_in_b = bool(st.get('type2_qualified') and stable_inside_b and water_boxes)
+        water_in_b = bool(st.get('type2_qualified') and water_boxes)
         if water_in_b:
             st['water_detected'] = True
             st['water_hit_frames'] = st.get('water_hit_frames', 0) + 1
             st['effective_wash_frames'] = st.get('effective_wash_frames', 0) + 1
-        washing_now = bool(st.get('type2_qualified') and stable_inside_b and water_in_b)
+        washing_now = bool(water_in_b)
 
         if self.disable_plate_only_events and is_plate and (vehicle_box is None and st.get('last_vehicle_box') is None):
             return
@@ -897,6 +910,80 @@ class EventManager:
         if not values:
             return 0.0
         return float(sum(values) / len(values))
+
+    def _non_yellow_override_window_frames(self):
+        return max(1, int(round(max(self.fps, 1.0) * NON_YELLOW_OVERRIDE_SECONDS)))
+
+    def _get_non_yellow_vehicle_override(self, track_state, vehicle_label, vehicle_conf, frame_idx):
+        recent = track_state.get('vehicle_non_yellow_recent')
+        if not isinstance(recent, deque):
+            recent = deque()
+            track_state['vehicle_non_yellow_recent'] = recent
+
+        current_locked = track_state.get('vehicle_cls_locked') or track_state.get('vehicle_cls') or ''
+        if current_locked != YELLOW_TRUCK_LABEL:
+            recent.clear()
+            track_state['vehicle_high_conf_label'] = ''
+            track_state['vehicle_high_conf_count'] = 0
+            return ''
+
+        window_frames = self._non_yellow_override_window_frames()
+        min_frame = frame_idx - window_frames + 1
+        while recent and recent[0].get('frame', -1) < min_frame:
+            recent.popleft()
+
+        label = (vehicle_label or '').strip()
+        try:
+            conf_val = float(vehicle_conf if vehicle_conf is not None else 0.0)
+        except (TypeError, ValueError):
+            conf_val = 0.0
+
+        if label in NON_YELLOW_OVERRIDE_LABELS:
+            recent.append({'frame': frame_idx, 'label': label})
+            if conf_val >= NON_YELLOW_HIGH_CONFIDENCE:
+                if track_state.get('vehicle_high_conf_label') == label:
+                    track_state['vehicle_high_conf_count'] = int(track_state.get('vehicle_high_conf_count', 0)) + 1
+                else:
+                    track_state['vehicle_high_conf_label'] = label
+                    track_state['vehicle_high_conf_count'] = 1
+            else:
+                track_state['vehicle_high_conf_label'] = ''
+                track_state['vehicle_high_conf_count'] = 0
+        else:
+            track_state['vehicle_high_conf_label'] = ''
+            track_state['vehicle_high_conf_count'] = 0
+
+        streak_label = track_state.get('vehicle_high_conf_label', '')
+        streak_count = int(track_state.get('vehicle_high_conf_count', 0) or 0)
+        if streak_label in NON_YELLOW_OVERRIDE_LABELS and streak_count >= NON_YELLOW_HIGH_CONF_STREAK:
+            return streak_label
+
+        label_counts = {}
+        for entry in recent:
+            entry_label = entry.get('label', '')
+            if entry_label in NON_YELLOW_OVERRIDE_LABELS:
+                label_counts[entry_label] = label_counts.get(entry_label, 0) + 1
+        if not label_counts:
+            return ''
+        best_label, best_count = max(label_counts.items(), key=lambda kv: (kv[1], kv[0]))
+        if best_count >= window_frames:
+            return best_label
+        return ''
+
+    def _apply_non_yellow_vehicle_override(self, track_state, counts, override_label):
+        counts = dict(counts or {})
+        yellow_count = int(counts.get(YELLOW_TRUCK_LABEL, 0) or 0)
+        counts[override_label] = max(int(counts.get(override_label, 0) or 0), yellow_count + 1, self.vehicle_lock_min_votes)
+        track_state['class_counts'] = counts
+        track_state['vehicle_cls_locked'] = override_label
+        track_state['vehicle_cls'] = override_label
+        track_state['vehicle_cls_frozen'] = True
+        track_state['vehicle_high_conf_label'] = ''
+        track_state['vehicle_high_conf_count'] = 0
+        recent = track_state.get('vehicle_non_yellow_recent')
+        if isinstance(recent, deque):
+            recent.clear()
+        return counts
 
     def _infer_plate_color(self, track_state):
         tracked_color = (track_state.get('plate_color') or '').strip()
