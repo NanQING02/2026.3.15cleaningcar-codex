@@ -41,6 +41,7 @@ from .video_io import (
     _resolve_runtime_path,
     create_video_reader,
     detect_source_mode,
+    finalize_per_id_recording,
     parse_core_mask,
 )
 from .vision import box_iou, get_anchor_point, point_in_box, scale_point, scale_polygon
@@ -686,23 +687,7 @@ def process_video(path, args):
         writer = per_id_writers.pop(track_id, None)
         if writer is None:
             return
-        finalized = False
-        try:
-            finalized = bool(writer.release())
-        except Exception:
-            finalized = False
-        if not finalized:
-            return
-        if not track_state:
-            track_state = {}
-        frame_idx = track_state.get('record_stop_frame')
-        if frame_idx is None:
-            frame_idx = track_state.get('last_frame_idx', 0)
-        frame = track_state.get('last_frame')
-        try:
-            event_manager.emit_event(track_id, 6, frame_idx, frame, {}, track_state)
-        except Exception:
-            return
+        finalize_per_id_recording(writer, track_id, track_state, event_manager)
 
     def finalize_per_id_for_track(track_id, track_state):
         close_per_id_writer(track_id, track_state)

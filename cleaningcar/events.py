@@ -152,6 +152,7 @@ class EventManager:
         self.single_lifecycle_events = True
         self.require_vehicle_type_for_events = bool(self.logic.get('require_vehicle_type_for_events', False))
         self.max_per_id_video_seconds = 600.0
+        self.per_id_video_tail_seconds = 5.0
         self.pending_events = {}
         self.upload_buffer = {}
         self.upload_qualified = set()
@@ -228,6 +229,8 @@ class EventManager:
             'zone_a_dwell_frames': 0,
             'track_frame_count': 0,
             'abnormal_reasons': set(),
+            'type2_qualified': False,
+            'type2_qualified_frame': -1,
         })
         if self.single_lifecycle_events and st.get('closed'):
             st['last_frame_idx'] = frame_idx
@@ -331,8 +334,6 @@ class EventManager:
         st['zone_state'] = zone_state
 
         timestamp = self.frame_timestamp(frame_idx)
-        water_hit = self.water_contact(ref_box, water_boxes)
-        water_signal = bool(water_hit or water_active or bool(water_boxes))
         inside_a = bool(zone_state and zone_state.inside_a)
         inside_b = bool(zone_state and zone_state.inside_b)
         if zone_flags.get('enter_a'):
@@ -378,47 +379,26 @@ class EventManager:
                 st['zone_b_dwell_frames'] = anchor_elapsed
             st['zone_b_enter_frame'] = -1
         meets_anchor_delay = (not inside_b) or (anchor_elapsed >= self.zone_b_anchor_min_frames)
-        candidate_active = bool(inside_b and meets_anchor_delay)
+        stable_inside_b = bool(inside_b and meets_anchor_delay)
         event_enabled = bool(
             st.get('zone_a_dwell_frames', 0) > 0
             or inside_a
             or zone_flags.get('enter_a')
             or zone_flags.get('exit_a')
         )
-        if not candidate_active:
-            st['washing_candidate'] = False
-        else:
-            st['washing_candidate'] = True
-        hit = 1 if inside_b and water_boxes else 0
-        if inside_b:
-            st['water_hit_frames'] = st.get('water_hit_frames', 0) + hit
-            win = st.get('water_window')
-            if not isinstance(win, deque):
-                win = deque(maxlen=self.water_window_size)
-            if win.maxlen != self.water_window_size:
-                win = deque(win, maxlen=self.water_window_size)
-            win.append(hit)
-            st['water_window'] = win
-            if sum(win) >= self.water_window_min_hits:
-                st['effective_wash_frames'] = st.get('effective_wash_frames', 0) + 1
-        water_ready = st.get('water_hit_frames', 0) >= self.min_water_hit_frames_for_wash
-        stationary_ready = (self.stationary_min_frames > 0 and
-                            st['stationary_frames'] >= self.stationary_min_frames)
-        water_seconds = st.get('effective_wash_frames', 0) / max(self.fps, 1e-6)
-        trigger_ready = bool(candidate_active and water_seconds >= 5.0)
-        if water_signal:
-            st['water_detected'] = True
-        was_washing = bool(st.get('washing'))
-        just_confirmed = False
-        if candidate_active and trigger_ready and not st.get('washing_confirmed'):
-            st['washing_confirmed'] = True
-            just_confirmed = True
-        if not candidate_active and not was_washing:
-            st['washing_confirmed'] = False
-        washing_now = bool(candidate_active and st.get('washing_confirmed'))
+        st['washing_candidate'] = stable_inside_b
+        type2_ready = bool(event_enabled and zone_flags.get('enter_b'))
+        if type2_ready:
+            st['type2_qualified'] = True
+            if st.get('type2_qualified_frame', -1) < 0:
+                st['type2_qualified_frame'] = frame_idx
 
-        if just_confirmed:
-            st['wash_start_time'] = timestamp
+        water_in_b = bool(st.get('type2_qualified') and stable_inside_b and water_boxes)
+        if water_in_b:
+            st['water_detected'] = True
+            st['water_hit_frames'] = st.get('water_hit_frames', 0) + 1
+            st['effective_wash_frames'] = st.get('effective_wash_frames', 0) + 1
+        washing_now = bool(st.get('type2_qualified') and stable_inside_b and water_in_b)
 
         if self.disable_plate_only_events and is_plate and (vehicle_box is None and st.get('last_vehicle_box') is None):
             return
@@ -429,7 +409,7 @@ class EventManager:
         if bool(zone_state and zone_state.inside_a) and 1 not in st['events'] and 1 in self.allowed_events and can_type1:
             self.emit_event(track_id, 1, frame_idx, frame, {'captureTime': timestamp}, st)
             st['events'].add(1)
-        if event_enabled and zone_flags.get('enter_b') and 2 not in st['events'] and 2 in self.allowed_events:
+        if type2_ready and 2 not in st['events'] and 2 in self.allowed_events:
             if 1 in self.allowed_events and 1 not in st['events']:
                 backfill_type1 = True
                 if self.min_type1_track_frames > 0:
@@ -440,19 +420,20 @@ class EventManager:
                     st['events'].add(1)
             self.emit_event(track_id, 2, frame_idx, frame, {'captureTime': timestamp}, st)
             st['events'].add(2)
-        if event_enabled and just_confirmed and 3 in self.allowed_events:
+        if water_in_b and 3 not in st['events'] and 3 in self.allowed_events:
+            st['washing_confirmed'] = True
+            st['wash_start_time'] = timestamp
             self.emit_event(track_id, 3, frame_idx, frame, {
                 'captureTime': timestamp,
                 'washStartTime': timestamp,
             }, st)
             st['events'].add(3)
-        if washing_now:
-            st['wash_duration'] = self._compute_effective_wash_duration(st, frame_idx)
+        st['wash_duration'] = self._compute_effective_wash_duration(st, frame_idx)
         can_type4 = False
         if zone_flags.get('exit_b'):
             if st.get('zone_b_dwell_frames', 0) >= self.min_type4_zone_b_dwell:
                 can_type4 = True
-        if event_enabled and can_type4 and 4 in self.allowed_events:
+        if event_enabled and st.get('type2_qualified') and can_type4 and 4 not in st['events'] and 4 in self.allowed_events:
             st['wash_end_time'] = st.get('wash_end_time') or timestamp
             duration_val = self._compute_effective_wash_duration(st, frame_idx)
             st['wash_duration'] = duration_val
@@ -461,24 +442,12 @@ class EventManager:
                 'washDuration': round(duration_val, 2),
             }, st)
             st['events'].add(4)
-        can_type5 = True
-        if self.min_type5_zone_a_dwell > 0:
-            if st.get('zone_a_dwell_frames', 0) < self.min_type5_zone_a_dwell:
-                can_type5 = False
+        can_type5 = self._can_emit_type5(st)
         if zone_flags.get('exit_a') and 5 in self.allowed_events and 5 not in st['events'] and can_type5:
             st['wash_end_time'] = st.get('wash_end_time') or timestamp
             duration_val = self._compute_effective_wash_duration(st, frame_idx)
             st['wash_duration'] = duration_val
-            reasons = st.get('abnormal_reasons')
-            if reasons is None:
-                reasons = set()
-                st['abnormal_reasons'] = reasons
-            if 2 not in st['events']:
-                reasons.add('MISSING_TYPE2')
-            if st.get('water_detected') and 3 not in st['events']:
-                reasons.add('MISSING_TYPE3')
-            if st.get('zone_b_dwell_frames', 0) > 0 and 4 not in st['events']:
-                reasons.add('MISSING_TYPE4')
+            self._mark_type5_abnormal_reasons(st)
             self.emit_event(track_id, 5, frame_idx, frame, {
                 'captureTime': timestamp,
                 'washDuration': round(duration_val, 2),
@@ -513,7 +482,7 @@ class EventManager:
             if 'OVER_10_MINUTES' not in reasons:
                 reasons.add('OVER_10_MINUTES')
             if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
-                extra_frames = int(max(self.fps, 1.0) * 5.0)
+                extra_frames = self._record_tail_frames()
                 last_idx = st.get('last_frame_idx', frame_idx)
                 stop_frame = last_idx + extra_frames
                 prev_stop = st.get('record_stop_frame')
@@ -569,7 +538,13 @@ class EventManager:
                 continue
             if frame_idx - st.get('last_frame_idx', frame_idx) >= self.timeout_frames:
                 event_enabled = bool(st.get('zone_a_dwell_frames', 0) > 0)
-                if 4 not in st['events'] and 4 in self.allowed_events and event_enabled and st.get('water_detected') and st.get('zone_b_dwell_frames', 0) > 0:
+                if (
+                    4 not in st['events']
+                    and 4 in self.allowed_events
+                    and event_enabled
+                    and st.get('type2_qualified')
+                    and st.get('zone_b_dwell_frames', 0) > 0
+                ):
                     last_frame = st.get('last_frame_idx', frame_idx)
                     st['wash_end_time'] = st.get('wash_end_time') or self.frame_timestamp(last_frame)
                     duration_val = self._compute_effective_wash_duration(st, last_frame)
@@ -579,10 +554,7 @@ class EventManager:
                         'washDuration': round(duration_val, 2),
                     }, st)
                     st['events'].add(4)
-                can_type5 = True
-                if self.min_type5_zone_a_dwell > 0:
-                    if st.get('zone_a_dwell_frames', 0) < self.min_type5_zone_a_dwell:
-                        can_type5 = False
+                can_type5 = self._can_emit_type5(st)
                 if 5 not in st['events'] and 5 in self.allowed_events and can_type5 and event_enabled:
                     timestamp = self.frame_timestamp(st.get('last_frame_idx', frame_idx))
                     st['wash_end_time'] = st.get('wash_end_time') or timestamp
@@ -592,20 +564,11 @@ class EventManager:
                         'captureTime': timestamp,
                         'washDuration': round(duration_val, 2),
                     }
-                    reasons = st.get('abnormal_reasons')
-                    if reasons is None:
-                        reasons = set()
-                        st['abnormal_reasons'] = reasons
-                    if 2 not in st['events']:
-                        reasons.add('MISSING_TYPE2')
-                    if st.get('water_detected') and 3 not in st['events']:
-                        reasons.add('MISSING_TYPE3')
-                    if st.get('zone_b_dwell_frames', 0) > 0 and 4 not in st['events']:
-                        reasons.add('MISSING_TYPE4')
+                    self._mark_type5_abnormal_reasons(st)
                     self.emit_event(tid, 5, st.get('last_frame_idx', frame_idx), st.get('last_frame'), extras, st)
                     st['events'].add(5)
                 if st.get('record_start_frame') is not None and st.get('record_stop_frame') is None:
-                    extra_frames = int(max(self.fps, 1.0) * 5.0)
+                    extra_frames = self._record_tail_frames()
                     last_idx = st.get('last_frame_idx', frame_idx)
                     st['record_stop_frame'] = last_idx + extra_frames
                 if self.single_lifecycle_events and 5 in st['events']:
@@ -682,7 +645,7 @@ class EventManager:
         if track_state.get('record_start_frame') is None:
             track_state['record_start_frame'] = frame_idx
         if event_type == 5:
-            extra_frames = int(max(self.fps, 1.0) * 5.0)
+            extra_frames = self._record_tail_frames()
             stop_frame = frame_idx + extra_frames
             prev_stop = track_state.get('record_stop_frame')
             if prev_stop is None or stop_frame > prev_stop:
@@ -900,16 +863,35 @@ class EventManager:
         return best_text, bool(best_text)
 
     def _compute_effective_wash_duration(self, track_state, frame_idx):
-        if not track_state.get('water_detected'):
-            return 0.0
-        hits = track_state.get('water_hit_frames', 0)
-        if hits < self.min_water_hit_frames_for_wash:
-            return 0.0
         frames = track_state.get('effective_wash_frames', 0)
         if frames <= 0:
             return 0.0
         seconds = frames / max(self.fps, 1e-6)
         return max(0.0, seconds)
+
+    def _record_tail_frames(self):
+        return int(max(self.fps, 1.0) * self.per_id_video_tail_seconds)
+
+    def _can_emit_type5(self, track_state):
+        if not track_state.get('type2_qualified'):
+            return False
+        if self.min_type5_zone_a_dwell > 0:
+            if track_state.get('zone_a_dwell_frames', 0) < self.min_type5_zone_a_dwell:
+                return False
+        return True
+
+    def _mark_type5_abnormal_reasons(self, track_state):
+        reasons = track_state.get('abnormal_reasons')
+        if reasons is None:
+            reasons = set()
+            track_state['abnormal_reasons'] = reasons
+        if 2 not in track_state.get('events', set()):
+            reasons.add('MISSING_TYPE2')
+        if track_state.get('water_detected') and 3 not in track_state.get('events', set()):
+            reasons.add('MISSING_TYPE3')
+        if track_state.get('type2_qualified') and 4 not in track_state.get('events', set()):
+            reasons.add('MISSING_TYPE4')
+        return reasons
 
     def _avg(self, values):
         if not values:

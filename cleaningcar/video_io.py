@@ -255,6 +255,42 @@ def create_video_reader(path, args):
     return cap
 
 
+def finalize_per_id_recording(writer, track_id, track_state, event_manager):
+    if writer is None:
+        return False
+    finalized = False
+    try:
+        finalized = bool(writer.release())
+    except Exception:
+        finalized = False
+    if not finalized:
+        return False
+
+    state = track_state or {}
+    output_path = Path(getattr(writer, 'path', '') or '')
+    keep_video = bool(state.get('type2_qualified'))
+    if not keep_video:
+        if output_path:
+            try:
+                output_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        return False
+
+    if output_path and not output_path.exists():
+        return False
+
+    frame_idx = state.get('record_stop_frame')
+    if frame_idx is None:
+        frame_idx = state.get('last_frame_idx', 0)
+    frame = state.get('last_frame')
+    try:
+        event_manager.emit_event(track_id, 6, frame_idx, frame, {}, state)
+    except Exception:
+        return False
+    return True
+
+
 def detect_source_mode(path, override='auto', base_dir=None):
     mode = (override or 'auto').lower()
     if isinstance(path, str):
