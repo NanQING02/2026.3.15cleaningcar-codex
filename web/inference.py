@@ -1,3 +1,5 @@
+import os
+import signal
 import subprocess
 import sys
 import threading
@@ -6,6 +8,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
+from uuid import uuid4
 
 from fastapi import HTTPException
 
@@ -29,6 +32,11 @@ class InferenceManager:
         self.last_start: Optional[float] = None
         self.last_exit: Optional[Dict[str, float]] = None
         self.heartbeat_path: Optional[Path] = None
+        self.startup_flag_path: Optional[Path] = None
+        self.command_dir: Optional[Path] = None
+        self.device_id: str = ''
+        self.runtime_namespace_key: str = ''
+        self.launch_id: str = ''
         self.heartbeat_timeout_seconds = 30.0
         self.progress_timeout_seconds = 90.0
         self.heartbeat_startup_grace_seconds = 90.0
@@ -88,6 +96,7 @@ class InferenceManager:
         if not self.script_path.exists():
             raise RuntimeError('run_zone_detect.py not found')
         self._load_watchdog_settings_locked()
+        self._terminate_stale_runtime_process_locked()
         self._clear_heartbeat_file_locked()
         self._sync_source_policy_locked()
         if self.file_source:
@@ -96,7 +105,19 @@ class InferenceManager:
             else:
                 self._append_log('[guardian] file source detected，自动重启默认关闭，本次推理完成后将停止')
         cmd = [sys.executable, str(self.script_path), "--config", str(self.config_path)]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        self.launch_id = uuid4().hex[:12]
+        env = os.environ.copy()
+        env['CLEANINGCAR_LAUNCH_ID'] = self.launch_id
+        env['CLEANINGCAR_RUNTIME_NAMESPACE_KEY'] = self.runtime_namespace_key
+        env['CLEANINGCAR_DEVICE_ID'] = self.device_id
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
         self.process = proc
         self.restart_count += 1
         self.last_start = time.time()
@@ -105,12 +126,17 @@ class InferenceManager:
             'healthy': True,
             'reason': 'starting',
             'path': str(self.heartbeat_path) if self.heartbeat_path else '',
+            'runtime_namespace_key': self.runtime_namespace_key,
+            'launch_id': self.launch_id,
         }
         log_dir = state.ROOT / "logs" / "inference"
         log_name = datetime.fromtimestamp(self.last_start).strftime("infer_%Y%m%d_%H%M%S.log")
         log_path = log_dir / log_name
         threading.Thread(target=self._capture_output, args=(proc, log_path), daemon=True).start()
-        self._append_log(f'[guardian] started inference pid={proc.pid} log={log_path}')
+        self._append_log(
+            f'[guardian] started inference pid={proc.pid} '
+            f'ns={self.runtime_namespace_key} launch={self.launch_id} log={log_path}'
+        )
 
     def _terminate_locked(self):
         if not self.process:
@@ -168,6 +194,10 @@ class InferenceManager:
             heartbeat = dict(self.last_heartbeat_status)
             file_source = self.file_source
             single_shot = self.single_shot
+            runtime_namespace_key = self.runtime_namespace_key
+            device_id = self.device_id
+            launch_id = self.launch_id
+            heartbeat_path = str(self.heartbeat_path) if self.heartbeat_path else ''
         status = {
             'running': running,
             'pid': pid,
@@ -178,6 +208,10 @@ class InferenceManager:
             'file_source': file_source,
             'single_shot': single_shot,
             'heartbeat': heartbeat,
+            'runtime_namespace_key': runtime_namespace_key,
+            'device_id': device_id,
+            'launch_id': launch_id,
+            'heartbeat_path': heartbeat_path,
         }
         return status
 
@@ -227,19 +261,94 @@ class InferenceManager:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _coerce_int(value) -> Optional[int]:
+        try:
+            pid = int(value)
+        except (TypeError, ValueError):
+            return None
+        return pid if pid > 0 else None
+
+    @staticmethod
+    def _pid_exists(pid: Optional[int]) -> bool:
+        if pid is None or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+    def _terminate_pid_locked(self, pid: int, reason: str) -> bool:
+        tracked_pid = self.process.pid if self.process and self.process.poll() is None else None
+        if pid <= 0 or pid == tracked_pid or pid == os.getpid():
+            return False
+        if not self._pid_exists(pid):
+            return False
+        self._append_log(f'[guardian] terminating stale inference pid={pid} reason={reason}')
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as exc:
+            self._append_log(f'[guardian] failed to terminate stale pid={pid}: {exc}')
+            return False
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if not self._pid_exists(pid):
+                self._append_log(f'[guardian] stale inference exited pid={pid}')
+                return True
+            time.sleep(0.1)
+        force_signal = getattr(signal, 'SIGKILL', signal.SIGTERM)
+        try:
+            os.kill(pid, force_signal)
+        except OSError as exc:
+            self._append_log(f'[guardian] failed to kill stale pid={pid}: {exc}')
+            return False
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if not self._pid_exists(pid):
+                self._append_log(f'[guardian] stale inference killed pid={pid}')
+                return True
+            time.sleep(0.1)
+        self._append_log(f'[guardian] stale inference still alive pid={pid}')
+        return False
+
     def _load_watchdog_settings_locked(self):
         try:
             cfg = ConfigManager(self.config_path)
-            runtime = resolve_runtime_settings(cfg.data, self.config_path.parent)
+            runtime = resolve_runtime_settings(cfg.data, self.config_path.parent, namespace_hint=self.config_path.stem)
         except ConfigError as exc:
             self._append_log(f'[guardian] config error: {exc}')
-            runtime = resolve_runtime_settings({}, self.config_path.parent)
+            runtime = resolve_runtime_settings({}, self.config_path.parent, namespace_hint=self.config_path.stem)
         self.heartbeat_path = Path(runtime['heartbeat_path']) if runtime.get('heartbeat_path') else None
+        self.startup_flag_path = Path(runtime['startup_flag_path']) if runtime.get('startup_flag_path') else None
+        self.command_dir = Path(runtime['command_dir']) if runtime.get('command_dir') else None
+        self.runtime_namespace_key = str(runtime.get('runtime_namespace_key') or '')
+        self.device_id = str(runtime.get('device_id') or '')
         self.heartbeat_timeout_seconds = float(runtime.get('heartbeat_timeout_seconds', 30.0) or 30.0)
         self.progress_timeout_seconds = float(runtime.get('progress_timeout_seconds', 90.0) or 90.0)
         self.heartbeat_startup_grace_seconds = float(
             runtime.get('heartbeat_startup_grace_seconds', self.progress_timeout_seconds) or self.progress_timeout_seconds
         )
+
+    def _terminate_stale_runtime_process_locked(self):
+        if not self.heartbeat_path:
+            return
+        heartbeat = load_json_file(self.heartbeat_path) or {}
+        heartbeat_pid = self._coerce_int(heartbeat.get('pid'))
+        if heartbeat_pid is None:
+            return
+        heartbeat_namespace_key = str(heartbeat.get('runtime_namespace_key') or '').strip()
+        if (
+            heartbeat_namespace_key
+            and self.runtime_namespace_key
+            and heartbeat_namespace_key != self.runtime_namespace_key
+        ):
+            self._append_log(
+                f'[guardian] shared heartbeat path has different namespace, skip stale cleanup: '
+                f'path={self.heartbeat_path} file_ns={heartbeat_namespace_key} current_ns={self.runtime_namespace_key}'
+            )
+            return
+        self._terminate_pid_locked(heartbeat_pid, f'runtime_namespace={self.runtime_namespace_key or "default"}')
 
     def _clear_heartbeat_file_locked(self):
         if not self.heartbeat_path:
@@ -258,6 +367,8 @@ class InferenceManager:
             'healthy': True,
             'reason': 'disabled',
             'path': str(self.heartbeat_path) if self.heartbeat_path else '',
+            'runtime_namespace_key': self.runtime_namespace_key,
+            'launch_id': self.launch_id,
             'heartbeat_timeout_seconds': self.heartbeat_timeout_seconds,
             'progress_timeout_seconds': self.progress_timeout_seconds,
             'startup_grace_seconds': self.heartbeat_startup_grace_seconds,
@@ -291,21 +402,31 @@ class InferenceManager:
         if heartbeat_ts is None and stat is not None:
             heartbeat_ts = stat.st_mtime
         heartbeat_pid = heartbeat.get('pid')
+        heartbeat_launch_id = str(heartbeat.get('launch_id') or '').strip()
         expected_pid = self.process.pid if self.process and self.process.poll() is None else None
         old_heartbeat = False
+        mismatch_reason = ''
         if heartbeat_ts is not None and heartbeat_ts + 1e-6 < self.last_start:
             old_heartbeat = True
+            mismatch_reason = 'heartbeat_old'
         if expected_pid is not None and heartbeat_pid not in (None, '') and str(heartbeat_pid) != str(expected_pid):
             old_heartbeat = True
             info['expected_pid'] = expected_pid
             info['heartbeat_pid'] = heartbeat_pid
+            mismatch_reason = 'heartbeat_pid_mismatch'
+        if self.launch_id:
+            info['expected_launch_id'] = self.launch_id
+            info['heartbeat_launch_id'] = heartbeat_launch_id
+            if heartbeat_launch_id != self.launch_id:
+                old_heartbeat = True
+                mismatch_reason = 'heartbeat_launch_mismatch' if heartbeat_launch_id else 'heartbeat_launch_missing'
         if old_heartbeat:
             info['old_heartbeat_detected'] = True
             if startup_in_grace:
                 info['reason'] = 'starting'
                 return info
             info['healthy'] = False
-            info['reason'] = 'heartbeat_pid_mismatch'
+            info['reason'] = mismatch_reason or 'heartbeat_pid_mismatch'
             return info
 
         if heartbeat_ts is not None:

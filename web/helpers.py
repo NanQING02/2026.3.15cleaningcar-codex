@@ -7,6 +7,7 @@ from typing import List, Optional
 import cv2
 from fastapi import HTTPException
 
+from cleaningcar.runtime_signals import resolve_runtime_settings
 from config_manager import ConfigError, ConfigManager
 
 from . import state
@@ -39,10 +40,11 @@ def _detection_csv_path(cfg: ConfigManager) -> Optional[Path]:
 
 
 def _debug_frame_path(cfg: ConfigManager) -> Optional[Path]:
-    dbg_path = cfg.video.get("debug_frame_path")
+    runtime = resolve_runtime_settings(cfg.data, cfg.path.parent, namespace_hint=cfg.path.stem)
+    dbg_path = runtime.get("debug_frame_path")
     if not dbg_path:
         return None
-    return _resolve_path(dbg_path)
+    return Path(dbg_path)
 
 
 def _per_id_video_root(cfg: ConfigManager) -> Path:

@@ -11,6 +11,12 @@ import cv2
 
 from .video_io import _resolve_runtime_path
 
+DEFAULT_COMMAND_DIR = "/dev/shm/cleaningcar_cmd"
+DEFAULT_HEARTBEAT_PATH = "/dev/shm/cleaningcar_heartbeat.json"
+DEFAULT_STARTUP_FLAG_PATH = "/dev/shm/cleaningcar_started.flag"
+DEFAULT_DEBUG_FRAME_PATH = "/dev/shm/cleaningcar_debug.jpg"
+DEFAULT_RUNTIME_ROOT = "/dev/shm/cleaningcar_runtime"
+
 
 def _safe_float(value: Any, default: float) -> float:
     try:
@@ -19,20 +25,65 @@ def _safe_float(value: Any, default: float) -> float:
         return float(default)
 
 
-def resolve_runtime_settings(config: Optional[Dict[str, Any]], base_dir: Optional[Path]) -> Dict[str, Any]:
+def _safe_namespace_key(value: Any, default: str = "default") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    text = re.sub(r"[^\w.-]+", "_", text, flags=re.UNICODE)
+    text = text.strip("._-")
+    return text or default
+
+
+def _resolve_namespaced_runtime_path(
+    configured_value: Any,
+    legacy_default: str,
+    namespaced_default: Path,
+    base_dir: Optional[Path],
+) -> Path:
+    configured_text = str(configured_value or "").strip()
+    if not configured_text:
+        return namespaced_default
+    resolved_configured = _resolve_runtime_path(configured_text, base_dir)
+    resolved_legacy = _resolve_runtime_path(legacy_default, base_dir)
+    if resolved_configured == resolved_legacy:
+        return namespaced_default
+    return resolved_configured
+
+
+def resolve_runtime_settings(
+    config: Optional[Dict[str, Any]],
+    base_dir: Optional[Path],
+    namespace_hint: Optional[str] = None,
+) -> Dict[str, Any]:
     system_cfg = (config or {}).get("system", {}) or {}
+    device_id = str(system_cfg.get("device_id", "") or "").strip()
+    namespace_source = device_id or namespace_hint or (config or {}).get("config_name") or "default"
+    runtime_namespace_key = _safe_namespace_key(namespace_source)
+    runtime_root = _resolve_runtime_path(DEFAULT_RUNTIME_ROOT, base_dir) / runtime_namespace_key
     heartbeat_interval = max(0.5, _safe_float(system_cfg.get("heartbeat_interval_seconds"), 1.0))
     heartbeat_timeout = max(5.0, _safe_float(system_cfg.get("heartbeat_timeout_seconds"), 30.0))
     progress_timeout = max(heartbeat_timeout, _safe_float(system_cfg.get("progress_timeout_seconds"), 90.0))
     startup_grace = max(progress_timeout, _safe_float(system_cfg.get("heartbeat_startup_grace_seconds"), 90.0))
     return {
-        "command_dir": _resolve_runtime_path(system_cfg.get("command_dir", "/dev/shm/cleaningcar_cmd"), base_dir),
-        "heartbeat_path": _resolve_runtime_path(
-            system_cfg.get("heartbeat_path", "/dev/shm/cleaningcar_heartbeat.json"),
+        "device_id": device_id,
+        "runtime_namespace_key": runtime_namespace_key,
+        "runtime_root": runtime_root,
+        "command_dir": _resolve_namespaced_runtime_path(
+            system_cfg.get("command_dir", DEFAULT_COMMAND_DIR),
+            DEFAULT_COMMAND_DIR,
+            runtime_root / "cmd",
             base_dir,
         ),
-        "startup_flag_path": _resolve_runtime_path(
-            system_cfg.get("startup_flag_path", "/dev/shm/cleaningcar_started.flag"),
+        "heartbeat_path": _resolve_namespaced_runtime_path(
+            system_cfg.get("heartbeat_path", DEFAULT_HEARTBEAT_PATH),
+            DEFAULT_HEARTBEAT_PATH,
+            runtime_root / "heartbeat.json",
+            base_dir,
+        ),
+        "startup_flag_path": _resolve_namespaced_runtime_path(
+            system_cfg.get("startup_flag_path", DEFAULT_STARTUP_FLAG_PATH),
+            DEFAULT_STARTUP_FLAG_PATH,
+            runtime_root / "started.flag",
             base_dir,
         ),
         "startup_capture_dir": _resolve_runtime_path(
@@ -41,6 +92,12 @@ def resolve_runtime_settings(config: Optional[Dict[str, Any]], base_dir: Optiona
         ),
         "manual_capture_dir": _resolve_runtime_path(
             system_cfg.get("manual_capture_dir", "captures/manual"),
+            base_dir,
+        ),
+        "debug_frame_path": _resolve_namespaced_runtime_path(
+            ((config or {}).get("video", {}) or {}).get("debug_frame_path", DEFAULT_DEBUG_FRAME_PATH),
+            DEFAULT_DEBUG_FRAME_PATH,
+            runtime_root / "debug.jpg",
             base_dir,
         ),
         "heartbeat_interval_seconds": heartbeat_interval,

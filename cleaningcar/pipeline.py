@@ -85,17 +85,26 @@ def process_video(path, args):
     print(f'[reader] source_mode={source_mode}')
     consecutive_fails = 0
     reconnect_count = 0
+    config_path = str(getattr(args, '_config_path', config.get('config_path', '')) or '')
+    config_name = str(config.get('config_name') or (Path(config_path).name if config_path else ''))
+    config_namespace_hint = Path(config_path).stem if config_path else ''
+    launch_id = str(os.environ.get('CLEANINGCAR_LAUNCH_ID', '') or '').strip()
+    runtime_namespace_key_env = str(os.environ.get('CLEANINGCAR_RUNTIME_NAMESPACE_KEY', '') or '').strip()
+    runtime_device_id_env = str(os.environ.get('CLEANINGCAR_DEVICE_ID', '') or '').strip()
 
     metrics_path_conf = system_cfg.get('metrics_path', '/dev/shm/cleaningcar_metrics.json')
     metrics_path = None
     if metrics_path_conf:
         metrics_path = _resolve_runtime_path(metrics_path_conf, base_dir)
-    runtime_settings = resolve_runtime_settings(config, base_dir)
+    runtime_settings = resolve_runtime_settings(config, base_dir, namespace_hint=config_namespace_hint or None)
     command_dir = runtime_settings['command_dir']
     heartbeat_path = runtime_settings['heartbeat_path']
     startup_flag_path = runtime_settings['startup_flag_path']
     startup_capture_dir = runtime_settings['startup_capture_dir']
     manual_capture_dir = runtime_settings['manual_capture_dir']
+    runtime_namespace_key = runtime_namespace_key_env or str(runtime_settings.get('runtime_namespace_key') or '')
+    runtime_device_id = runtime_device_id_env or str(runtime_settings.get('device_id') or system_cfg.get('device_id') or '')
+    debug_frame_file = runtime_settings.get('debug_frame_path')
     heartbeat_interval_seconds = float(runtime_settings['heartbeat_interval_seconds'])
     command_poll_interval = min(heartbeat_interval_seconds, 0.5)
     storage_cfg = config.get('storage', {}) or {}
@@ -202,14 +211,8 @@ def process_video(path, args):
     debug_rois = getattr(args, 'debug_rois', False) or debug_overlay_flag
     debug_tracks = getattr(args, 'debug_tracks', False) or debug_tracks_cfg or debug_overlay_flag
 
-    debug_frame_path_conf = str(video_cfg.get('debug_frame_path', '') or '').strip()
-    debug_frame_file = None
-    if not debug_frame_path_conf:
-        shm = Path('/dev/shm')
-        if shm.exists() and os.access(shm, os.W_OK):
-            debug_frame_path_conf = str(shm / 'cleaningcar_debug.jpg')
-    if debug_frame_path_conf:
-        debug_frame_file = _resolve_runtime_path(debug_frame_path_conf, base_dir)
+    if debug_frame_file:
+        debug_frame_file = Path(debug_frame_file)
         if debug_frame_file.is_dir():
             debug_frame_file = debug_frame_file / 'latest.jpg'
         try:
@@ -236,8 +239,6 @@ def process_video(path, args):
     last_heartbeat_write = 0.0
     startup_emitted = False
     last_command_poll = 0.0
-    config_path = str(getattr(args, '_config_path', config.get('config_path', '')) or '')
-    config_name = str(config.get('config_name') or (Path(config_path).name if config_path else ''))
     task_q = Queue(maxsize=args.queue_size)
     result_q = Queue()
 
@@ -478,6 +479,9 @@ def process_video(path, args):
         payload = {
             'timestamp': now,
             'pid': os.getpid(),
+            'launch_id': launch_id,
+            'runtime_namespace_key': runtime_namespace_key,
+            'device_id': runtime_device_id,
             'status': 'starting',
             'startup_emitted': startup_emitted,
             'total_frames': total_frames,
@@ -509,6 +513,9 @@ def process_video(path, args):
         payload = {
             'timestamp': now,
             'pid': os.getpid(),
+            'launch_id': launch_id,
+            'runtime_namespace_key': runtime_namespace_key,
+            'device_id': runtime_device_id,
             'status': status,
             'startup_emitted': startup_emitted,
             'total_frames': total_frames,
@@ -554,6 +561,9 @@ def process_video(path, args):
         payload = {
             'timestamp': time.time(),
             'pid': os.getpid(),
+            'launch_id': launch_id,
+            'runtime_namespace_key': runtime_namespace_key,
+            'device_id': runtime_device_id,
             'config_path': config_path,
             'config_name': config_name,
             'frame_idx': latest_frame_idx,

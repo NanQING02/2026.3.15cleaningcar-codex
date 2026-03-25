@@ -383,7 +383,7 @@ def keep_snapshot(payload: SnapshotKeepPayload):
     if not payload.raw and not payload.annotated:
         raise HTTPException(status_code=400, detail="At least one of raw/annotated must be true.")
     cfg = _load_config()
-    runtime_settings = resolve_runtime_settings(cfg.data, cfg.path.parent)
+    runtime_settings = resolve_runtime_settings(cfg.data, cfg.path.parent, namespace_hint=cfg.path.stem)
     command_path = write_snapshot_command(
         runtime_settings['command_dir'],
         {

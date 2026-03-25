@@ -11,6 +11,12 @@
 
 ## 重点配置项
 
+### `system.device_id`
+
+- 当前多路运行时命名空间的主键
+- 默认运行时文件会按它自动隔离
+- 多路部署时，**每一份配置的 `device_id` 必须唯一**
+
 ### `video.source` / `video.source_mode`
 
 - `video.source`：视频源地址，可以是 RTSP、摄像头索引或本地文件
@@ -49,6 +55,20 @@ FP 检测模型后处理模式：
   - 启动成功标志文件
 - `system.command_dir`
   - 运行期命令目录，手动截图等命令会从这里消费
+
+默认收口规则：
+
+- 当这 3 项留空，或仍使用旧默认值时，运行时会自动改写到：
+  - `/dev/shm/cleaningcar_runtime/<device_id>/heartbeat.json`
+  - `/dev/shm/cleaningcar_runtime/<device_id>/started.flag`
+  - `/dev/shm/cleaningcar_runtime/<device_id>/cmd/`
+- 如果你显式填写了自定义路径，则仍按自定义路径运行
+
+### `video.debug_frame_path`
+
+- 调试画面输出文件
+- 当留空或仍使用旧默认值 `/dev/shm/cleaningcar_debug.jpg` 时，运行时会自动改写到：
+  - `/dev/shm/cleaningcar_runtime/<device_id>/debug.jpg`
 
 ### `storage.*`
 
