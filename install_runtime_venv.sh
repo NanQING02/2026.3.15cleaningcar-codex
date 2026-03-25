@@ -5,6 +5,16 @@ SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/venv-gst"
 PACKAGES_DIR="$SCRIPT_DIR/packages"
+APT_OPTIONS=()
+APT_SOURCEPARTS_OVERRIDE=""
+
+cleanup_install_runtime() {
+  if [ -n "${APT_SOURCEPARTS_OVERRIDE:-}" ] && [ -d "${APT_SOURCEPARTS_OVERRIDE:-}" ]; then
+    rm -rf "$APT_SOURCEPARTS_OVERRIDE"
+  fi
+}
+
+trap cleanup_install_runtime EXIT
 
 resolve_config_path() {
   local config_override="${CONFIG_PATH:-}"
@@ -37,6 +47,61 @@ run_apt() {
     echo "[setup] apt failed: $desc"
     exit 1
   fi
+}
+
+prepare_apt_main_sources_only() {
+  local sources_file="/etc/apt/sources.list"
+  if [ ! -f "$sources_file" ]; then
+    return 1
+  fi
+  if ! grep -Eq '^[[:space:]]*deb([[:space:]]|\[)' "$sources_file"; then
+    return 1
+  fi
+  if [ -z "${APT_SOURCEPARTS_OVERRIDE:-}" ]; then
+    APT_SOURCEPARTS_OVERRIDE="$(mktemp -d)"
+  fi
+  APT_OPTIONS=(
+    -o "Dir::Etc::sourcelist=$sources_file"
+    -o "Dir::Etc::sourceparts=$APT_SOURCEPARTS_OVERRIDE"
+    -o "APT::Get::List-Cleanup=0"
+  )
+}
+
+run_apt_cmd() {
+  local sudo_prefix="$1"
+  shift
+  if [ -n "$sudo_prefix" ]; then
+    "$sudo_prefix" apt-get "${APT_OPTIONS[@]}" "$@"
+  else
+    apt-get "${APT_OPTIONS[@]}" "$@"
+  fi
+}
+
+refresh_apt_indexes() {
+  local sudo_prefix="$1"
+  APT_OPTIONS=()
+  if run_apt_cmd "$sudo_prefix" update; then
+    return 0
+  fi
+  if prepare_apt_main_sources_only; then
+    echo "[setup] apt-get update failed, retry with /etc/apt/sources.list only"
+    if run_apt_cmd "$sudo_prefix" update; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+install_system_packages() {
+  local sudo_prefix="$1"
+  shift
+  APT_OPTIONS=()
+  if run_apt_cmd "$sudo_prefix" install -y "$@"; then
+    return 0
+  fi
+  echo "[setup] direct apt install failed, refreshing package indexes"
+  refresh_apt_indexes "$sudo_prefix" || return 1
+  run_apt_cmd "$sudo_prefix" install -y "$@"
 }
 
 detect_system_python() {
@@ -98,19 +163,23 @@ fi
 
 if [ -z "$PYTHON_BIN" ]; then
   SUDO_PREFIX="$(ensure_sudo_prefix)"
+  APT_PACKAGES=(
+    python3-venv
+    python3-pip
+    python3-opencv
+    gstreamer1.0-tools
+    gstreamer1.0-plugins-base
+    gstreamer1.0-plugins-good
+    gstreamer1.0-plugins-bad
+    gstreamer1.0-libav
+  )
 
   if [ -n "$SUDO_PREFIX" ]; then
-    run_apt "apt-get update" "$SUDO_PREFIX" apt-get update
     run_apt "install python/opencv/gstreamer packages" \
-      "$SUDO_PREFIX" apt-get install -y python3-venv python3-pip python3-opencv \
-        gstreamer1.0-tools gstreamer1.0-plugins-base \
-        gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+      install_system_packages "$SUDO_PREFIX" "${APT_PACKAGES[@]}"
   else
-    run_apt "apt-get update" apt-get update
     run_apt "install python/opencv/gstreamer packages" \
-      apt-get install -y python3-venv python3-pip python3-opencv \
-        gstreamer1.0-tools gstreamer1.0-plugins-base \
-        gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
+      install_system_packages "" "${APT_PACKAGES[@]}"
   fi
 
   CV2_STATUS="$("$PYTHON_SYS" - <<'EOF'
