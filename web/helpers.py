@@ -1,5 +1,4 @@
 import csv
-import json
 from collections import deque
 from pathlib import Path
 from typing import List, Optional
@@ -12,6 +11,7 @@ from config_manager import ConfigError, ConfigManager
 
 from . import state
 
+
 def _resolve_path(path_str: Optional[str], default: Optional[Path] = None) -> Path:
     if path_str:
         candidate = Path(path_str)
@@ -21,6 +21,18 @@ def _resolve_path(path_str: Optional[str], default: Optional[Path] = None) -> Pa
         candidate = state.ROOT
     if not candidate.is_absolute():
         candidate = (state.ROOT / candidate).resolve()
+    return candidate
+
+
+def _resolve_config_path(key: Optional[str] = None) -> Path:
+    key = str(key or "").strip()
+    if not key:
+        return state.CONFIG_PATH
+    candidate = (state.CONFIG_PATH.parent / key).resolve()
+    if not candidate.exists():
+        raise HTTPException(status_code=404, detail="配置文件不存在")
+    if candidate.suffix.lower() != ".json":
+        raise HTTPException(status_code=400, detail="仅支持 JSON 配置")
     return candidate
 
 
@@ -78,9 +90,10 @@ def _read_csv_tail(path: Path, limit: int):
     return list(rows)
 
 
-def _load_config():
+def _load_config(key: Optional[str] = None) -> ConfigManager:
+    cfg_path = _resolve_config_path(key)
     try:
-        return ConfigManager(state.CONFIG_PATH)
+        return ConfigManager(cfg_path)
     except ConfigError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -89,10 +102,11 @@ def _inference_log_dir() -> Path:
     return state.ROOT / "logs" / "inference"
 
 
-def _capture_frame(force=False):
-    if state.FRAME_CACHE.data is not None and not force:
+def _capture_frame(force: bool = False, key: Optional[str] = None):
+    cache_key = str(_resolve_config_path(key))
+    if state.FRAME_CACHE.data is not None and state.FRAME_CACHE.key == cache_key and not force:
         return
-    cfg = _load_config()
+    cfg = _load_config(key)
     src = cfg.video.get("source")
     if not src:
         raise HTTPException(status_code=400, detail="video.source 未配置")
@@ -108,6 +122,8 @@ def _capture_frame(force=False):
         raise HTTPException(status_code=500, detail="帧编码失败")
     state.FRAME_CACHE.data = buf.tobytes()
     state.FRAME_CACHE.size = (frame.shape[1], frame.shape[0])
+    state.FRAME_CACHE.key = cache_key
+
 
 def _available_config_files() -> List[Path]:
     base = state.CONFIG_PATH.parent

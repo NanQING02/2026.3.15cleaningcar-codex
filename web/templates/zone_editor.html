@@ -82,6 +82,7 @@
           <label>设备 ID
             <input v-model="form.system.device_id" placeholder="RK3588-XXX" />
           </label>
+          <p class="hint">多路运行时每份配置的 `device_id` 必须唯一；若留空，运行时命名空间会退回当前配置文件名。</p>
           <label>API 地址
             <input v-model="form.system.api.url" placeholder="https://example/api" />
           </label>
@@ -211,7 +212,7 @@
           <div class="subsection">
             <h4>调试与心跳</h4>
             <label>调试帧路径
-              <input v-model="form.video.debug_frame_path" placeholder="/dev/shm/cleaningcar_debug.jpg" />
+              <input v-model="form.video.debug_frame_path" placeholder="留空则自动使用 /dev/shm/cleaningcar_runtime/<device_id>/debug.jpg" />
             </label>
             <label>调试帧间隔
               <input type="number" min="1" v-model.number="form.video.debug_frame_interval" />
@@ -223,13 +224,13 @@
               <input type="number" min="1" max="100" v-model.number="form.video.debug_frame_quality" />
             </label>
             <label>命令目录
-              <input v-model="form.system.command_dir" placeholder="/dev/shm/cleaningcar_cmd" />
+              <input v-model="form.system.command_dir" placeholder="留空则自动使用 /dev/shm/cleaningcar_runtime/<device_id>/cmd" />
             </label>
             <label>CPU Mask
               <input v-model="form.system.cpu_mask" placeholder="0-3 / 4-7" />
             </label>
             <label>心跳文件
-              <input v-model="form.system.heartbeat_path" placeholder="/dev/shm/cleaningcar_heartbeat.json" />
+              <input v-model="form.system.heartbeat_path" placeholder="留空则自动使用 /dev/shm/cleaningcar_runtime/<device_id>/heartbeat.json" />
             </label>
             <label>心跳写入间隔（秒）
               <input type="number" min="0.5" step="0.5" v-model.number="form.system.heartbeat_interval_seconds" />
@@ -244,8 +245,9 @@
               <input type="number" min="1" step="1" v-model.number="form.system.heartbeat_startup_grace_seconds" />
             </label>
             <label>启动标志文件
-              <input v-model="form.system.startup_flag_path" placeholder="/dev/shm/cleaningcar_started.flag" />
+              <input v-model="form.system.startup_flag_path" placeholder="留空则自动使用 /dev/shm/cleaningcar_runtime/<device_id>/started.flag" />
             </label>
+            <p class="hint">`debug_frame_path`、`command_dir`、`heartbeat_path`、`startup_flag_path` 留空时，会自动隔离到 `/dev/shm/cleaningcar_runtime/&lt;device_id或配置名&gt;/`。</p>
             <label>启动截图目录
               <input v-model="form.system.startup_capture_dir" placeholder="captures/startup" />
             </label>
@@ -451,9 +453,9 @@
               device_id: '',
               monitor_interval: 2.0,
               metrics_path: '/dev/shm/cleaningcar_metrics.json',
-              command_dir: '/dev/shm/cleaningcar_cmd',
-              startup_flag_path: '/dev/shm/cleaningcar_started.flag',
-              heartbeat_path: '/dev/shm/cleaningcar_heartbeat.json',
+              command_dir: '',
+              startup_flag_path: '',
+              heartbeat_path: '',
               heartbeat_interval_seconds: 1.0,
               heartbeat_timeout_seconds: 30.0,
               progress_timeout_seconds: 90.0,
@@ -562,6 +564,7 @@
           inferenceStatusTimer: null,
           inferenceLogTimer: null,
           configFiles: [],
+          configDeviceIds: {},
           selectedConfig: '',
           activeConfig: '',
           logicView: false,
@@ -594,8 +597,9 @@
         },
         perIdVideoUrl() {
           if (!this.selectedVideo) return '';
-          const encoded = encodeURIComponent(this.selectedVideo.relativePath);
-          return `/videos/per_id/file?path=${encoded}`;
+          return this.buildKeyedUrl('/videos/per_id/file', {
+            path: this.selectedVideo.relativePath
+          });
         },
         abnormalReasonTable() {
           return {
@@ -633,6 +637,52 @@
         if (this.debugFrameTimer) clearInterval(this.debugFrameTimer);
       },
       methods: {
+        normalizeConfigName(name) {
+          const text = String(name || '').trim();
+          if (!text) return '';
+          return text.toLowerCase().endsWith('.json') ? text : `${text}.json`;
+        },
+        normalizeDeviceId(value) {
+          return String(value || '').trim();
+        },
+        buildKeyedUrl(path, params = {}) {
+          const url = new URL(path, window.location.origin);
+          const key = this.activeInferenceKey;
+          if (key) {
+            url.searchParams.set('key', key);
+          }
+          Object.entries(params || {}).forEach(([name, value]) => {
+            if (value === undefined || value === null || value === '') {
+              return;
+            }
+            url.searchParams.set(name, String(value));
+          });
+          return `${url.pathname}${url.search}`;
+        },
+        validateDeviceIdUnique(targetName = '', allowCurrentConfig = true) {
+          const deviceId = this.normalizeDeviceId(this.form.system.device_id);
+          if (!deviceId) {
+            return;
+          }
+          const normalizedTarget = this.normalizeConfigName(targetName || this.activeInferenceKey);
+          const currentName = this.normalizeConfigName(this.activeInferenceKey);
+          for (const [configName, configDeviceId] of Object.entries(this.configDeviceIds || {})) {
+            if (this.normalizeDeviceId(configDeviceId) !== deviceId) {
+              continue;
+            }
+            const normalizedName = this.normalizeConfigName(configName);
+            if (allowCurrentConfig && normalizedName === currentName) {
+              continue;
+            }
+            if (normalizedTarget && normalizedName === normalizedTarget) {
+              continue;
+            }
+            throw new Error(`device_id "${deviceId}" 已被 ${configName} 使用；多路运行时每份配置的 device_id 必须唯一。`);
+          }
+        },
+        async refreshConfigFileCache() {
+          await this.loadConfigFiles();
+        },
         bindKeyboard() {
           window.addEventListener('keydown', (e) => {
             if (e.key === 'Delete') {
@@ -650,6 +700,8 @@
           this.busy = true;
           this.status = '正在另存配置…';
           try {
+            const targetName = this.normalizeConfigName(name);
+            this.validateDeviceIdUnique(targetName, false);
             const payload = {
               name,
               data: this.form
@@ -686,6 +738,7 @@
             if (!res.ok) return;
             const data = await res.json();
             this.configFiles = data.files || [];
+            this.configDeviceIds = data.device_ids || {};
             this.activeConfig = data.active || '';
             if (!this.selectedConfig && this.activeConfig) {
               this.selectedConfig = this.activeConfig;
@@ -695,7 +748,7 @@
         },
         async loadConfig() {
           try {
-            const res = await fetch('/config');
+            const res = await fetch(this.buildKeyedUrl('/config'));
             if (!res.ok) throw new Error('读取配置失败');
             const data = await res.json();
             this.form = JSON.parse(JSON.stringify(data));
@@ -722,9 +775,9 @@
           this.form.system.device_id = this.form.system.device_id || '';
           this.form.system.monitor_interval = Number(this.form.system.monitor_interval || 2.0);
           this.form.system.metrics_path = this.form.system.metrics_path || '/dev/shm/cleaningcar_metrics.json';
-          this.form.system.command_dir = this.form.system.command_dir || '/dev/shm/cleaningcar_cmd';
-          this.form.system.startup_flag_path = this.form.system.startup_flag_path || '/dev/shm/cleaningcar_started.flag';
-          this.form.system.heartbeat_path = this.form.system.heartbeat_path || '/dev/shm/cleaningcar_heartbeat.json';
+          this.form.system.command_dir = this.form.system.command_dir || '';
+          this.form.system.startup_flag_path = this.form.system.startup_flag_path || '';
+          this.form.system.heartbeat_path = this.form.system.heartbeat_path || '';
           this.form.system.heartbeat_interval_seconds = Number(this.form.system.heartbeat_interval_seconds || 1.0);
           this.form.system.heartbeat_timeout_seconds = Number(this.form.system.heartbeat_timeout_seconds || 30.0);
           this.form.system.progress_timeout_seconds = Number(this.form.system.progress_timeout_seconds || 90.0);
@@ -805,7 +858,7 @@
           this.busy = true;
           this.status = '保存配置中…';
           try {
-            const res = await fetch(endpoint, {
+            const res = await fetch(this.buildKeyedUrl(endpoint), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload)
@@ -821,6 +874,7 @@
               throw new Error(msg);
             }
             this.lastSave = new Date().toLocaleString();
+            await this.refreshConfigFileCache();
             this.status = successText;
           } catch (err) {
             this.status = err.message;
@@ -938,6 +992,7 @@
           };
         },
         async saveUserConfig() {
+          this.validateDeviceIdUnique(this.activeInferenceKey, true);
           await this.postConfig('/config/user', this.buildUserConfigPayload(), '用户参数已保存');
         },
         async saveDeveloperConfig() {
@@ -974,7 +1029,7 @@
           this.status = '保存区域中…';
           try {
             const payload = this.form.zones;
-            const res = await fetch('/zones', {
+            const res = await fetch(this.buildKeyedUrl('/zones'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload)
@@ -992,7 +1047,7 @@
           this.busy = true;
           this.status = '刷新背景帧…';
           try {
-            await fetch('/frame/reload', { method: 'POST' });
+            await fetch(this.buildKeyedUrl('/frame/reload'), { method: 'POST' });
             await this.loadFrame();
             this.status = '背景帧已刷新';
           } catch (err) {
@@ -1094,7 +1149,7 @@
           return base;
         },
        async loadFrame() {
-          const metaRes = await fetch('/frame_meta');
+          const metaRes = await fetch(this.buildKeyedUrl('/frame_meta'));
           const meta = await metaRes.json();
           if (!meta.available) {
             this.status = '背景帧不可用，请先配置视频源';
@@ -1103,7 +1158,7 @@
           this.canvas.width = meta.width;
           this.canvas.height = meta.height;
           this.frameSize = { w: meta.width, h: meta.height };
-          this.backgroundUrl = `/frame?ts=${Date.now()}`;
+          this.backgroundUrl = this.buildKeyedUrl('/frame', { ts: Date.now() });
           this.repaint();
         },
        setMode(mode) {
@@ -1267,7 +1322,7 @@
         async refreshDebugImage() {
           this.debugFrameStatus = '加载中…';
           try {
-            const res = await fetch(`/debug_frame_meta?ts=${Date.now()}`);
+            const res = await fetch(this.buildKeyedUrl('/debug_frame_meta', { ts: Date.now() }));
             if (!res.ok) throw new Error('请求失败');
             const data = await res.json();
             if (!data.available) {
@@ -1277,7 +1332,7 @@
             }
             const updated = data.updated ? new Date(data.updated * 1000) : new Date();
             this.debugFrameStatus = `最新时间：${updated.toLocaleString()} (${data.path || ''})`;
-            this.debugImageUrl = `/debug_frame?ts=${Date.now()}`;
+            this.debugImageUrl = this.buildKeyedUrl('/debug_frame', { ts: Date.now() });
           } catch (err) {
             this.debugImageUrl = '';
             this.debugFrameStatus = err.message;
@@ -1286,7 +1341,7 @@
         async loadPerIdVideos() {
           this.perIdLoading = true;
           try {
-            const res = await fetch(`/videos/per_id?ts=${Date.now()}`);
+            const res = await fetch(this.buildKeyedUrl('/videos/per_id', { ts: Date.now() }));
             if (!res.ok) throw new Error('读取按车ID录像列表失败');
             const data = await res.json();
             this.perIdVideos = data.videos || [];

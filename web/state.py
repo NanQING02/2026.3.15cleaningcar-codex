@@ -12,9 +12,11 @@ class FrameCache:
     def __init__(self):
         self.data = None
         self.size = (960, 540)
+        self.key = None
 
     def clear(self):
         self.data = None
+        self.key = None
 
 
 FRAME_CACHE = FrameCache()

@@ -30,6 +30,7 @@ from .helpers import (
     _inference_log_dir,
     _load_config,
     _per_id_video_root,
+    _resolve_config_path,
     _read_csv_tail,
 )
 from .inference import (
@@ -54,18 +55,54 @@ def _payload_dict(payload: ConfigPayload) -> dict:
     return payload.dict(exclude_none=True)
 
 
-def _apply_config_update(payload: dict, tier: Optional[str] = None):
-    cfg = _load_config()
+def _extract_device_id(config_data: dict) -> str:
+    system_cfg = (config_data or {}).get("system", {}) or {}
+    return str(system_cfg.get("device_id", "") or "").strip()
+
+
+def _validate_device_id_unique(config_path: Path, config_data: dict) -> None:
+    device_id = _extract_device_id(config_data)
+    if not device_id:
+        return
+    duplicates = []
+    target_path = Path(config_path).resolve()
+    for candidate in sorted(target_path.parent.glob("*.json")):
+        try:
+            candidate_path = candidate.resolve()
+        except OSError:
+            continue
+        if candidate_path == target_path:
+            continue
+        try:
+            with candidate.open("r", encoding="utf-8") as f:
+                other_data = json.load(f)
+        except Exception:
+            continue
+        if _extract_device_id(other_data) == device_id:
+            duplicates.append(candidate.name)
+    if duplicates:
+        joined = "、".join(duplicates)
+        raise HTTPException(
+            status_code=400,
+            detail=f"device_id '{device_id}' 与其他配置重复：{joined}。多路运行时每份配置的 device_id 必须唯一。",
+        )
+
+
+def _apply_config_update(payload: dict, tier: Optional[str] = None, key: Optional[str] = None):
+    cfg = _load_config(key)
     try:
         merge_tier_payload(cfg.data, payload, tier)
+        _validate_device_id_unique(cfg.path, cfg.data)
         cfg.save()
     except ConfigTierError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存失败: {exc}") from exc
-    if any(key in payload for key in ("video", "zones")):
+    if any(item in payload for item in ("video", "zones")):
         state.FRAME_CACHE.clear()
-    return {"status": "ok", "tier": tier or "all"}
+    return {"status": "ok", "tier": tier or "all", "config": cfg.path.name}
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI):
@@ -111,14 +148,14 @@ def static_file(name: str):
 
 
 @app.get("/zones")
-def read_zones():
-    cfg = _load_config()
+def read_zones(key: Optional[str] = None):
+    cfg = _load_config(key)
     return cfg.zones
 
 
 @app.post("/zones")
-def update_zones(payload: ZonePayload):
-    cfg = _load_config()
+def update_zones(payload: ZonePayload, key: Optional[str] = None):
+    cfg = _load_config(key)
     cfg.data.setdefault("zones", {})
     cfg.data["zones"]["zone_a_detection"] = payload.zone_a_detection
     cfg.data["zones"]["zone_b_wash"] = payload.zone_b_wash
@@ -131,10 +168,10 @@ def update_zones(payload: ZonePayload):
 
 
 @app.get("/frame_meta")
-def frame_meta():
-    if state.FRAME_CACHE.data is None:
+def frame_meta(key: Optional[str] = None):
+    if state.FRAME_CACHE.data is None or state.FRAME_CACHE.key != str(_resolve_config_path(key)):
         try:
-            _capture_frame()
+            _capture_frame(key=key)
         except HTTPException:
             return {"available": False}
     w, h = state.FRAME_CACHE.size
@@ -142,21 +179,21 @@ def frame_meta():
 
 
 @app.get("/frame")
-def get_frame():
-    if state.FRAME_CACHE.data is None:
-        _capture_frame()
+def get_frame(key: Optional[str] = None):
+    if state.FRAME_CACHE.data is None or state.FRAME_CACHE.key != str(_resolve_config_path(key)):
+        _capture_frame(key=key)
     return Response(content=state.FRAME_CACHE.data, media_type="image/jpeg")
 
 
 @app.post("/frame/reload")
-def reload_frame():
-    _capture_frame(force=True)
+def reload_frame(key: Optional[str] = None):
+    _capture_frame(force=True, key=key)
     return {"status": "ok"}
 
 
 @app.get("/debug_frame_meta")
-def debug_frame_meta():
-    cfg = _load_config()
+def debug_frame_meta(key: Optional[str] = None):
+    cfg = _load_config(key)
     path = _debug_frame_path(cfg)
     if not path or not path.exists():
         return {"available": False}
@@ -168,8 +205,8 @@ def debug_frame_meta():
 
 
 @app.get("/debug_frame")
-def debug_frame():
-    cfg = _load_config()
+def debug_frame(key: Optional[str] = None):
+    cfg = _load_config(key)
     path = _debug_frame_path(cfg)
     if not path or not path.exists():
         raise HTTPException(status_code=404, detail="调试帧不存在，请先在配置里启用 debug_frame_path。")
@@ -181,8 +218,8 @@ def debug_frame():
 
 
 @app.get("/videos/per_id")
-def list_per_id_videos(limit: int = 200):
-    cfg = _load_config()
+def list_per_id_videos(limit: int = 200, key: Optional[str] = None):
+    cfg = _load_config(key)
     root = _per_id_video_root(cfg)
     events_root = _events_root(cfg)
     if not root.exists():
@@ -250,8 +287,8 @@ def list_per_id_videos(limit: int = 200):
 
 
 @app.get("/videos/per_id/file")
-def get_per_id_video(path: str):
-    cfg = _load_config()
+def get_per_id_video(path: str, key: Optional[str] = None):
+    cfg = _load_config(key)
     root = _per_id_video_root(cfg)
     target = (root / path).resolve()
     try:
@@ -266,8 +303,8 @@ def get_per_id_video(path: str):
 
 
 @app.get("/config")
-def read_config():
-    cfg = _load_config()
+def read_config(key: Optional[str] = None):
+    cfg = _load_config(key)
     return cfg.data
 
 
@@ -277,8 +314,8 @@ def read_config_schema():
 
 
 @app.get("/config/user")
-def read_user_config():
-    cfg = _load_config()
+def read_user_config(key: Optional[str] = None):
+    cfg = _load_config(key)
     return extract_tier_subset(cfg.data, TIER_USER)
 
 
@@ -297,8 +334,11 @@ def save_config_as(payload: ConfigSaveAsPayload):
     if target.exists():
         raise HTTPException(status_code=409, detail="配置文件已存在")
     try:
+        _validate_device_id_unique(target, payload.data)
         with target.open("w", encoding="utf-8") as f:
             json.dump(payload.data, f, ensure_ascii=False, indent=2)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存失败: {exc}") from exc
     return {"saved_as": target.name}
@@ -306,9 +346,18 @@ def save_config_as(payload: ConfigSaveAsPayload):
 @app.get("/config/files")
 def list_config_files():
     files = _available_config_files()
+    device_ids = {}
+    for path in files:
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            device_ids[path.name] = _extract_device_id(data)
+        except Exception:
+            device_ids[path.name] = ""
     return {
         "active": state.CONFIG_PATH.name,
         "files": [p.name for p in files],
+        "device_ids": device_ids,
     }
 
 
@@ -327,18 +376,18 @@ def select_config(payload: ConfigSelectPayload):
     return {"active": candidate.name}
 
 @app.post("/config")
-def update_config(payload: ConfigPayload):
-    return _apply_config_update(_payload_dict(payload))
+def update_config(payload: ConfigPayload, key: Optional[str] = None):
+    return _apply_config_update(_payload_dict(payload), key=key)
 
 
 @app.post("/config/user")
-def update_user_config(payload: ConfigPayload):
-    return _apply_config_update(_payload_dict(payload), TIER_USER)
+def update_user_config(payload: ConfigPayload, key: Optional[str] = None):
+    return _apply_config_update(_payload_dict(payload), TIER_USER, key=key)
 
 
 @app.post("/config/developer")
-def update_developer_config(payload: ConfigPayload):
-    return _apply_config_update(_payload_dict(payload), TIER_DEVELOPER)
+def update_developer_config(payload: ConfigPayload, key: Optional[str] = None):
+    return _apply_config_update(_payload_dict(payload), TIER_DEVELOPER, key=key)
 
 
 @app.post("/inference/start")
@@ -379,10 +428,10 @@ def inference_health(key: Optional[str] = None):
 
 
 @app.post("/snapshot/keep")
-def keep_snapshot(payload: SnapshotKeepPayload):
+def keep_snapshot(payload: SnapshotKeepPayload, key: Optional[str] = None):
     if not payload.raw and not payload.annotated:
         raise HTTPException(status_code=400, detail="At least one of raw/annotated must be true.")
-    cfg = _load_config()
+    cfg = _load_config(key)
     runtime_settings = resolve_runtime_settings(cfg.data, cfg.path.parent, namespace_hint=cfg.path.stem)
     command_path = write_snapshot_command(
         runtime_settings['command_dir'],
@@ -392,7 +441,7 @@ def keep_snapshot(payload: SnapshotKeepPayload):
             'raw': bool(payload.raw),
             'annotated': bool(payload.annotated),
             'requested_at': datetime.now().isoformat(timespec='seconds'),
-            'requested_config': state.CONFIG_PATH.name,
+            'requested_config': cfg.path.name,
             'requested_by': 'web_api',
         },
     )
@@ -409,8 +458,8 @@ def inference_logs(lines: int = 200, key: Optional[str] = None):
 
 
 @app.get("/logs/events")
-def get_event_logs(lines: int = 50):
-    cfg = _load_config()
+def get_event_logs(lines: int = 50, key: Optional[str] = None):
+    cfg = _load_config(key)
     path = _event_log_path(cfg)
     if not path.exists():
         return {"available": False, "path": str(path)}
@@ -419,8 +468,8 @@ def get_event_logs(lines: int = 50):
 
 
 @app.get("/logs/detections")
-def get_detection_logs(lines: int = 50):
-    cfg = _load_config()
+def get_detection_logs(lines: int = 50, key: Optional[str] = None):
+    cfg = _load_config(key)
     csv_path = _detection_csv_path(cfg)
     if not csv_path or not csv_path.exists():
         return {"available": False, "path": str(csv_path) if csv_path else ""}
