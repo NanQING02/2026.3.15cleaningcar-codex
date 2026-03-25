@@ -161,6 +161,7 @@ python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 - `configs/README.md`
 - `docs/README.md`
 - `docs/总览说明/项目功能与使用说明.md`
-- `docs/总览说明/项目解耦报告.md`
+- `docs/部署验收/环境目录说明.md`
+- `docs/部署验收/运行路径说明.md`
+- `docs/部署验收/心跳与截图对接说明.md`
 - `docs/部署验收/板端验收清单.md`
-- `docs/规划记录/清理与服务化双分支计划.md`
