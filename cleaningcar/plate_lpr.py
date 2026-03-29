@@ -8,6 +8,7 @@ import numpy as np
 from rknnlite.api import RKNNLite
 
 from .constants import PLATE_COLOR_NAMES, PLATE_DECODE_CHARS
+from .resize_accel import resize_bgr
 
 _PLATE_NAME = PLATE_DECODE_CHARS
 _PLATE_COLORS = PLATE_COLOR_NAMES
@@ -21,7 +22,7 @@ def _letter_box(img: np.ndarray, size: Tuple[int, int] = (640, 640)) -> Tuple[np
     left = int((size[1] - new_w) / 2)
     bottom = size[0] - new_h - top
     right = size[1] - new_w - left
-    resized = cv2.resize(img, (new_w, new_h))
+    resized = resize_bgr(img, (new_w, new_h))
     padded = cv2.copyMakeBorder(
         resized,
         top,
@@ -116,7 +117,7 @@ def _split_merge_double_plate(img: np.ndarray) -> np.ndarray:
     lower = img[int(1.0 / 3.0 * h) :, :]
     if lower.size == 0:
         return img
-    upper = cv2.resize(upper, (lower.shape[1], lower.shape[0]))
+    upper = resize_bgr(upper, (lower.shape[1], lower.shape[0]))
     return np.hstack((upper, lower))
 
 
@@ -199,7 +200,7 @@ class DualPlateRecognizer:
         if plate_bgr is None or plate_bgr.size == 0:
             return "", ""
 
-        plate = cv2.resize(plate_bgr, (168, 48))
+        plate = resize_bgr(plate_bgr, (168, 48))
         inp = np.expand_dims(plate, axis=0).astype(np.uint8)
         outputs = self.recognizer.inference(inputs=[inp], data_format=["nhwc"])
         if not outputs or len(outputs) < 2:

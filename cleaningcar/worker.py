@@ -50,6 +50,9 @@ class DetectWorker(threading.Thread):
             rec_model_path=str(args.plate_rec_model),
             verbose=False,
         )
+        self.plate_infer_stride = max(1, int(getattr(args, "plate_infer_stride", 1) or 1))
+        if self.idx == 0:
+            print(f"plate_infer_stride={self.plate_infer_stride}")
 
         self.frames = 0
         self.infer_time = 0.0
@@ -149,15 +152,16 @@ class DetectWorker(threading.Thread):
                 )
 
             dual_plate_results = []
-            try:
-                dual_plate_results = self.dual_lpr.infer_frame(
-                    base_frame,
-                    conf_thresh=min(float(self.args.conf), 0.3),
-                    iou_thresh=float(self.args.iou),
-                )
-            except Exception as exc:
-                if frame_idx == 0 or frame_idx % 300 == 0:
-                    print(f"Worker {self.idx}: dual plate inference failed: {exc}")
+            if frame_idx % self.plate_infer_stride == 0:
+                try:
+                    dual_plate_results = self.dual_lpr.infer_frame(
+                        base_frame,
+                        conf_thresh=min(float(self.args.conf), 0.3),
+                        iou_thresh=float(self.args.iou),
+                    )
+                except Exception as exc:
+                    if frame_idx == 0 or frame_idx % 300 == 0:
+                        print(f"Worker {self.idx}: dual plate inference failed: {exc}")
 
             for item in dual_plate_results:
                 box = item.get("box") or []

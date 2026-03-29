@@ -4,6 +4,8 @@ from typing import Dict, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from .resize_accel import resize_bgr
+
 
 @dataclass
 class LetterboxInfo:
@@ -27,7 +29,7 @@ def letterbox(image: np.ndarray, new_shape: Tuple[int, int] = (640, 640), color=
     dh = (new_shape[0] - new_unpad[1]) / 2.0
 
     if shape[::-1] != new_unpad:
-        image = cv2.resize(image, new_unpad, interpolation=cv2.INTER_LINEAR)
+        image = resize_bgr(image, new_unpad, interpolation=cv2.INTER_LINEAR)
 
     top = int(round(dh - 0.1))
     bottom = int(round(dh + 0.1))

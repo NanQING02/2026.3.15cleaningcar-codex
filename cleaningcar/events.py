@@ -14,6 +14,7 @@ from utils.upload_queue import SQLiteUploadQueue
 
 from .constants import VEHICLE_LABEL_CN
 from .plate import normalize_plate_text
+from .resize_accel import resize_bgr
 from .vision import box_iou, get_anchor_point
 
 YELLOW_TRUCK_LABEL = 'yellow truck'
@@ -1104,7 +1105,7 @@ class EventManager:
             h, w = frame.shape[:2]
             target_w, target_h = 1920, 1080
             if w != target_w or h != target_h:
-                frame_to_save = cv2.resize(frame, (target_w, target_h))
+                frame_to_save = resize_bgr(frame, (target_w, target_h))
             else:
                 frame_to_save = frame
             params = [int(cv2.IMWRITE_JPEG_QUALITY), 85]

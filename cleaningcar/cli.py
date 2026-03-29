@@ -38,6 +38,8 @@ def parse_args():
     ap.add_argument('--plate_rec_model', default='models/plate/plate_rec_color.rknn',
                     help='Path to plate text/color RKNN used by the dual-model LPR pipeline.')
     ap.add_argument('--plate_lock_frames', type=int, default=5, help='Frames required before plate text is locked.')
+    ap.add_argument('--plate_infer_stride', type=int, default=1,
+                    help='Run dual-plate inference every N frames (>=1) to reduce CPU load.')
     ap.add_argument('--config', default=str(DEFAULT_CONFIG_PATH), help='JSON config describing ROI/event logic.')
     ap.add_argument('--camera', help='当配置包含多个 camera 条目时，指定要运行的 key。')
     ap.add_argument('--debug_rois', action='store_true', help='Visualize stage lines on output frames.')

@@ -50,6 +50,27 @@ def _resolve_namespaced_runtime_path(
     return resolved_configured
 
 
+def _resolve_optional_debug_frame_path(
+    configured_value: Any,
+    namespaced_default: Path,
+    base_dir: Optional[Path],
+) -> Optional[Path]:
+    if isinstance(configured_value, bool):
+        if not configured_value:
+            return None
+        configured_text = DEFAULT_DEBUG_FRAME_PATH
+    else:
+        configured_text = str(configured_value or "").strip()
+    if configured_text.lower() in ("", "0", "false", "none", "null", "off", "disable", "disabled"):
+        return None
+    return _resolve_namespaced_runtime_path(
+        configured_text,
+        DEFAULT_DEBUG_FRAME_PATH,
+        namespaced_default,
+        base_dir,
+    )
+
+
 def resolve_runtime_settings(
     config: Optional[Dict[str, Any]],
     base_dir: Optional[Path],
@@ -94,9 +115,8 @@ def resolve_runtime_settings(
             system_cfg.get("manual_capture_dir", "captures/manual"),
             base_dir,
         ),
-        "debug_frame_path": _resolve_namespaced_runtime_path(
+        "debug_frame_path": _resolve_optional_debug_frame_path(
             ((config or {}).get("video", {}) or {}).get("debug_frame_path", DEFAULT_DEBUG_FRAME_PATH),
-            DEFAULT_DEBUG_FRAME_PATH,
             runtime_root / "debug.jpg",
             base_dir,
         ),

@@ -96,6 +96,7 @@ class ConfigManager:
         logic.setdefault('track_max_age', 120)
         logic.setdefault('vehicle_iou_threshold', 0.3)
         logic.setdefault('vehicle_center_gate_ratio', 0.0)
+        logic.setdefault('vehicle_tracker_impl', 'bytetrack')
         logic['disable_plate_only_events'] = True
         logic['single_lifecycle_events'] = True
         logic.setdefault('min_zone_a_dwell_frames_for_type5', 25)

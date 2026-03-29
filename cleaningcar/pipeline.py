@@ -26,6 +26,7 @@ from .constants import (
 from .events import EventManager, EventUploader
 from .monitoring import monitor_loop
 from .plate import PlateTextTracker
+from .resize_accel import resize_backend_name, resize_bgr
 from .runtime_config import load_config
 from .runtime_signals import (
     load_json_file,
@@ -176,11 +177,14 @@ def process_video(path, args):
     vehicle_center_gate_ratio = float(config.get('vehicle_center_gate_ratio', 0.0) or 0.0)
     if vehicle_center_gate_ratio < 0.0:
         vehicle_center_gate_ratio = 0.0
+    vehicle_tracker_impl = str(logic_cfg.get('vehicle_tracker_impl', 'bytetrack') or 'bytetrack').strip().lower()
     vehicle_tracker = VehicleTracker(
         iou_thresh=vehicle_iou_thresh,
         max_age=int(config.get('track_max_age', 60)),
         center_gate_ratio=vehicle_center_gate_ratio,
+        tracker_impl=vehicle_tracker_impl,
     )
+    print(f'[tracker] impl={vehicle_tracker_impl}')
     default_event_log = os.path.join(config.get('event_output_dir', './events'), 'event_log.csv')
     event_log_arg = getattr(args, 'event_log', None)
     event_log_path = default_event_log if (not event_log_arg or event_log_arg == 'auto') else event_log_arg
@@ -241,6 +245,8 @@ def process_video(path, args):
     last_command_poll = 0.0
     task_q = Queue(maxsize=args.queue_size)
     result_q = Queue()
+    dropped_frame_count = 0
+    dropped_frame_ids = set()
 
     car_plate_cache = {}
     car_plate_cache_ttl = int(config.get('car_plate_cache_ttl', CAR_PLATE_CACHE_TTL))
@@ -257,14 +263,19 @@ def process_video(path, args):
     if per_id_downscale_ratio < 0.999:
         per_id_target_width = max(1, int(width * per_id_downscale_ratio))
         per_id_target_height = max(1, int(height * per_id_downscale_ratio))
-    target_w = int(logic_cfg.get('per_id_target_width', 1920) or 1920)
-    target_h = int(logic_cfg.get('per_id_target_height', 1080) or 1080)
-    per_id_target_width = target_w
-    per_id_target_height = target_h
+    target_w = int(logic_cfg.get('per_id_target_width', 0) or 0)
+    target_h = int(logic_cfg.get('per_id_target_height', 0) or 0)
+    if target_w > 0 and target_h > 0:
+        per_id_target_width = target_w
+        per_id_target_height = target_h
     per_id_output_fps = float(logic_cfg.get('per_id_fps', 20.0) or 20.0)
     per_id_frame_stride = int(logic_cfg.get('per_id_frame_stride', 1) or 1)
     if per_id_frame_stride < 1:
         per_id_frame_stride = 1
+    resize_backend_label = resize_backend_name()
+
+    def resize_per_id_frame(frame_to_write):
+        return resize_bgr(frame_to_write, (per_id_target_width, per_id_target_height))
 
     def probe_writable_directory(directory: Path):
         try:
@@ -387,6 +398,11 @@ def process_video(path, args):
         per_id_video_dir = resolve_per_id_video_root()
         if per_id_video_dir is None:
             enable_per_id_video = False
+        else:
+            print(
+                f'[per-id-video] target_size={per_id_target_width}x{per_id_target_height} '
+                f'fps={per_id_output_fps:.2f} stride={per_id_frame_stride} resize_backend={resize_backend_label}'
+            )
 
     def collect_per_id_cleanup_roots():
         roots = [DEFAULT_PER_ID_VIDEO_DIR]
@@ -474,6 +490,44 @@ def process_video(path, args):
         except Exception:
             return -1
 
+    def _mark_dropped_frame(frame_idx):
+        nonlocal dropped_frame_count, next_frame_to_write
+        if frame_idx is None:
+            return
+        try:
+            frame_idx = int(frame_idx)
+        except (TypeError, ValueError):
+            return
+        if frame_idx < next_frame_to_write:
+            return
+        dropped_frame_ids.add(frame_idx)
+        raw_frame_cache.pop(frame_idx, None)
+        dropped_frame_count += 1
+        if dropped_frame_count <= 5 or dropped_frame_count % 50 == 0:
+            print(f'[realtime] dropped stale frame idx={frame_idx}, total={dropped_frame_count}')
+
+    def _advance_dropped_frames():
+        nonlocal next_frame_to_write
+        moved = 0
+        while next_frame_to_write in dropped_frame_ids and next_frame_to_write not in pending:
+            dropped_frame_ids.discard(next_frame_to_write)
+            raw_frame_cache.pop(next_frame_to_write, None)
+            next_frame_to_write += 1
+            moved += 1
+        return moved
+
+    def _drop_stale_task_for_realtime():
+        try:
+            stale_item = task_q.get_nowait()
+        except Empty:
+            return False
+        task_q.task_done()
+        if stale_item is None:
+            return False
+        stale_idx = stale_item[0] if isinstance(stale_item, tuple) and stale_item else None
+        _mark_dropped_frame(stale_idx)
+        return True
+
     def write_startup_heartbeat(stage='booting'):
         now = time.time()
         payload = {
@@ -489,6 +543,8 @@ def process_video(path, args):
             'pending_results': len(pending),
             'task_queue_size': _safe_qsize(task_q),
             'result_queue_size': _safe_qsize(result_q),
+            'dropped_frames': dropped_frame_count,
+            'dropped_pending': len(dropped_frame_ids),
             'last_progress_ts': now,
             'last_frame_read_ts': last_frame_read_ts,
             'last_result_ts': last_result_ts,
@@ -523,6 +579,8 @@ def process_video(path, args):
             'pending_results': len(pending),
             'task_queue_size': _safe_qsize(task_q),
             'result_queue_size': _safe_qsize(result_q),
+            'dropped_frames': dropped_frame_count,
+            'dropped_pending': len(dropped_frame_ids),
             'last_progress_ts': last_progress_ts,
             'last_frame_read_ts': last_frame_read_ts,
             'last_result_ts': last_result_ts,
@@ -759,7 +817,7 @@ def process_video(path, args):
 
     def drain_results(block=True):
         nonlocal next_frame_to_write, finished_workers, car_plate_cache, per_id_writers
-        nonlocal enable_per_id_video, latest_raw_frame, latest_annotated_frame
+        nonlocal enable_per_id_video, latest_raw_frame, latest_annotated_frame, dropped_frame_ids
         nonlocal latest_frame_idx, latest_capture_ts, last_progress_ts, last_result_ts
         try:
             item = result_q.get(block=block, timeout=1 if block else 0)
@@ -774,6 +832,7 @@ def process_video(path, args):
             else:
                 idx, capture_ts, frame_out, rows, det_payload = item
             pending[idx] = (frame_out, rows, det_payload, capture_ts)
+            _advance_dropped_frames()
             while next_frame_to_write in pending:
                 frame_out, rows, det_payload, capture_ts = pending.pop(next_frame_to_write)
                 raw_frame_for_idx = raw_frame_cache.pop(next_frame_to_write, None)
@@ -1133,9 +1192,7 @@ def process_video(path, args):
                         if writer is not None:
                             frame_to_write = frame_out
                             if frame_to_write is not None:
-                                h, w = frame_to_write.shape[:2]
-                                if w != per_id_target_width or h != per_id_target_height:
-                                    frame_to_write = cv2.resize(frame_to_write, (per_id_target_width, per_id_target_height))
+                                frame_to_write = resize_per_id_frame(frame_to_write)
                                 if next_frame_to_write % per_id_frame_stride == 0:
                                     writer.write(frame_to_write)
                 if raw_frame_for_idx is not None:
@@ -1154,6 +1211,7 @@ def process_video(path, args):
                 if csv_writer and rows:
                     csv_writer.writerows(rows)
                 next_frame_to_write += 1
+                _advance_dropped_frames()
                 event_manager.flush_inactive(alias_seen, next_frame_to_write, finalize_per_id_for_track)
                 cleanup_alias_confirm(next_frame_to_write)
             return True
@@ -1161,6 +1219,7 @@ def process_video(path, args):
     frame_limit = args.limit if args.limit and args.limit > 0 else None
 
     while True:
+        _advance_dropped_frames()
         poll_runtime_commands()
         write_heartbeat(status='running')
         storage_cleaner.run_due(reason='periodic')
@@ -1210,15 +1269,27 @@ def process_video(path, args):
         latest_capture_ts = capture_ts
         last_frame_read_ts = capture_ts
         last_progress_ts = capture_ts
-        raw_frame_cache[total_frames] = latest_raw_frame
+        frame_idx = total_frames
+        raw_frame_cache[frame_idx] = latest_raw_frame
         while True:
             try:
-                task_q.put((total_frames, frame, capture_ts), timeout=0.5)
+                task_q.put_nowait((frame_idx, frame, capture_ts))
                 break
             except Full:
-                drain_results(block=False)
+                dropped = _drop_stale_task_for_realtime()
+                if not dropped:
+                    drain_results(block=False)
+                    time.sleep(0.001)
+                _advance_dropped_frames()
                 poll_runtime_commands(force=True)
-                write_heartbeat(status='backpressure', force=True)
+                write_heartbeat(
+                    status='backpressure',
+                    force=True,
+                    extra={
+                        'dropped_frames': dropped_frame_count,
+                        'dropped_pending': len(dropped_frame_ids),
+                    },
+                )
         total_frames += 1
         reader_log_frames += 1
         now = time.time()

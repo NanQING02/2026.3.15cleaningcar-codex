@@ -106,7 +106,8 @@ class FfmpegH264Writer:
             return False
 
     def _start(self):
-        for enc in ('libx264', 'h264_rkmpp', 'h264_v4l2m2m', 'h264_omx'):
+        # Prefer hardware encoders first to reduce CPU usage; fallback to libx264.
+        for enc in ('h264_rkmpp', 'h264_v4l2m2m', 'h264_omx', 'libx264'):
             if self._try_start(enc):
                 return
         print(f'[per-id-video] no available H.264 encoder for {self.path}')
@@ -203,14 +204,16 @@ def parse_core_mask(text: str):
     return bits or None
 
 
-def open_video_capture(src, hw_decode=False):
+def open_video_capture(src, hw_decode=False, rtsp_latency_ms=200, rtsp_appsink_max_buffers=1):
     if hw_decode and isinstance(src, str):
         pipelines = []
         if src.startswith(('rtsp://', 'rtsps://')):
+            rtsp_latency_ms = max(0, int(rtsp_latency_ms))
+            rtsp_appsink_max_buffers = max(1, int(rtsp_appsink_max_buffers))
             pipelines.append((
-                f"rtspsrc location=\"{src}\" latency=200 protocols=tcp ! "
+                f"rtspsrc location=\"{src}\" latency={rtsp_latency_ms} protocols=tcp ! "
                 "rtph264depay ! h264parse ! mppvideodec ! videoconvert ! "
-                "video/x-raw,format=BGR ! appsink sync=false drop=true",
+                f"video/x-raw,format=BGR ! appsink sync=false drop=true max-buffers={rtsp_appsink_max_buffers}",
                 '[reader] Using GStreamer+mpp RTSP TCP pipeline for {src}',
             ))
         elif not src.startswith(('http://', 'https://')):
@@ -231,6 +234,10 @@ def open_video_capture(src, hw_decode=False):
             os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
         cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
         if cap.isOpened():
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
             print(f'[reader] Using OpenCV FFmpeg RTSP TCP capture for {src}')
             return cap
     return cv2.VideoCapture(src)
@@ -238,8 +245,23 @@ def open_video_capture(src, hw_decode=False):
 
 def create_video_reader(path, args):
     """Wrapper so主流程统一调用，便于未来扩展到其他解码方式。"""
+    def _safe_int(value, default):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
+
     hw = bool(getattr(args, 'hw_decode', False))
-    cap = open_video_capture(path, hw_decode=hw)
+    config = getattr(args, '_config', {}) or {}
+    video_cfg = config.get('video', {}) or {}
+    rtsp_latency_ms = _safe_int(video_cfg.get('rtsp_latency_ms', 200), 200)
+    rtsp_appsink_max_buffers = _safe_int(video_cfg.get('rtsp_appsink_max_buffers', 1), 1)
+    cap = open_video_capture(
+        path,
+        hw_decode=hw,
+        rtsp_latency_ms=rtsp_latency_ms,
+        rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
+    )
     if not cap or not hasattr(cap, 'isOpened'):
         if hw:
             print(f'create_video_reader: 未能创建 GStreamer+mpp 硬解捕获对象，源={path}')
