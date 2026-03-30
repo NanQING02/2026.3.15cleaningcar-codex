@@ -227,7 +227,7 @@ def open_video_capture(src, hw_decode=False, rtsp_latency_ms=200, rtsp_appsink_m
             if cap.isOpened():
                 print(msg.format(src=src))
                 return cap
-        print(f'[reader] 硬解模式下 GStreamer+mpp 解码管道创建失败，源={src}，不回退软解，请检查 mpp 插件和视频源配置')
+        print(f'[reader] hardware decode pipeline open failed, source={src}')
         return None
     if isinstance(src, str) and src.startswith(('rtsp://', 'rtsps://')):
         if 'OPENCV_FFMPEG_CAPTURE_OPTIONS' not in os.environ:
@@ -239,12 +239,49 @@ def open_video_capture(src, hw_decode=False, rtsp_latency_ms=200, rtsp_appsink_m
             except Exception:
                 pass
             print(f'[reader] Using OpenCV FFmpeg RTSP TCP capture for {src}')
-            return cap
+        return cap
     return cv2.VideoCapture(src)
 
 
+def _source_kind_for_decode(path):
+    if not isinstance(path, str):
+        return 'other'
+    text = path.strip()
+    lower = text.lower()
+    if lower.startswith(('rtsp://', 'rtsps://')):
+        return 'rtsp'
+    if '://' in lower:
+        return 'other'
+    try:
+        candidate = Path(text).expanduser()
+        if candidate.is_file():
+            return 'file'
+    except OSError:
+        pass
+    return 'file'
+
+
+def _is_capture_opened(cap):
+    if cap is None or not hasattr(cap, 'isOpened'):
+        return False
+    try:
+        return bool(cap.isOpened())
+    except Exception:
+        return False
+
+
+def _safe_release_capture(cap):
+    if cap is None or not hasattr(cap, 'release'):
+        return
+    try:
+        cap.release()
+    except Exception:
+        pass
+
+
 def create_video_reader(path, args):
-    """Wrapper so主流程统一调用，便于未来扩展到其他解码方式。"""
+    """Create capture and return (capture, decode_meta)."""
+
     def _safe_int(value, default):
         try:
             return int(value)
@@ -256,25 +293,39 @@ def create_video_reader(path, args):
     video_cfg = config.get('video', {}) or {}
     rtsp_latency_ms = _safe_int(video_cfg.get('rtsp_latency_ms', 200), 200)
     rtsp_appsink_max_buffers = _safe_int(video_cfg.get('rtsp_appsink_max_buffers', 1), 1)
-    cap = open_video_capture(
+    decode_meta = {
+        'decode_mode': 'sw',
+        'fallback_used': False,
+        'fallback_reason': '',
+        'source_kind': _source_kind_for_decode(path),
+    }
+
+    if hw:
+        cap_hw = open_video_capture(
+            path,
+            hw_decode=True,
+            rtsp_latency_ms=rtsp_latency_ms,
+            rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
+        )
+        if _is_capture_opened(cap_hw):
+            decode_meta['decode_mode'] = 'hw'
+            return cap_hw, decode_meta
+        _safe_release_capture(cap_hw)
+        decode_meta['fallback_used'] = True
+        decode_meta['fallback_reason'] = 'hw_open_failed'
+
+    cap_sw = open_video_capture(
         path,
-        hw_decode=hw,
+        hw_decode=False,
         rtsp_latency_ms=rtsp_latency_ms,
         rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
     )
-    if not cap or not hasattr(cap, 'isOpened'):
-        if hw:
-            print(f'create_video_reader: 未能创建 GStreamer+mpp 硬解捕获对象，源={path}')
-        else:
-            print(f'create_video_reader: OpenCV 捕获对象创建失败，源={path}')
-        return None
-    if not cap.isOpened():
-        if hw:
-            print(f'create_video_reader: GStreamer+mpp 硬解捕获打开失败，源={path}')
-        else:
-            print(f'create_video_reader: OpenCV 捕获打开失败，源={path}')
-        return None
-    return cap
+    if _is_capture_opened(cap_sw):
+        decode_meta['decode_mode'] = 'sw'
+        return cap_sw, decode_meta
+    _safe_release_capture(cap_sw)
+    decode_meta['decode_mode'] = 'sw'
+    return None, decode_meta
 
 
 def finalize_per_id_recording(writer, track_id, track_state, event_manager):

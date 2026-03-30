@@ -13,6 +13,7 @@ import cv2
 from utils.upload_queue import SQLiteUploadQueue
 
 from .constants import VEHICLE_LABEL_CN
+from .log_throttle import WindowedLogThrottler
 from .plate import normalize_plate_text
 from .resize_accel import resize_bgr
 from .vision import box_iou, get_anchor_point
@@ -122,6 +123,46 @@ class EventManager:
         shadow_cfg = config.get('shadow_pool', {})
         self.shadow_max = int(shadow_cfg.get('max_candidates', 50))
         self.shadow_max_age = int(shadow_cfg.get('max_age_frames', 120))
+        self.plate_lock_frames = max(1, int(self.logic.get('plate_lock_frames', 5)))
+        self.plate_text_window_frames = max(
+            self.plate_lock_frames,
+            int(shadow_cfg.get('text_window_frames', min(self.shadow_max_age, max(self.plate_lock_frames * 3, 15)))),
+        )
+        self.plate_text_margin_ratio = float(shadow_cfg.get('text_margin_ratio', 0.12))
+        self.plate_text_switch_min_consecutive = max(
+            self.plate_lock_frames,
+            int(shadow_cfg.get('text_switch_min_consecutive', self.plate_lock_frames + 1)),
+        )
+        self.plate_text_switch_gain_ratio = float(shadow_cfg.get('text_switch_gain_ratio', 1.2))
+        self.plate_text_switch_margin_ratio = float(
+            shadow_cfg.get('text_switch_margin_ratio', max(self.plate_text_margin_ratio + 0.05, 0.18))
+        )
+        self.plate_color_min_confidence = float(
+            shadow_cfg.get('color_min_confidence', shadow_cfg.get('plate_color_min_confidence', 0.6))
+        )
+        self.plate_color_lock_frames = max(
+            2,
+            int(shadow_cfg.get('color_lock_frames', shadow_cfg.get('plate_color_lock_frames', 2))),
+        )
+        self.plate_color_window_frames = max(
+            self.plate_color_lock_frames,
+            int(shadow_cfg.get('color_window_frames', shadow_cfg.get('plate_color_window_frames', self.shadow_max_age))),
+        )
+        self.plate_color_switch_min_consecutive = max(
+            self.plate_color_lock_frames,
+            int(
+                shadow_cfg.get(
+                    'color_switch_min_consecutive',
+                    shadow_cfg.get('plate_color_switch_min_consecutive', self.plate_color_lock_frames + 1),
+                )
+            ),
+        )
+        self.plate_color_switch_gain_ratio = float(
+            shadow_cfg.get('color_switch_gain_ratio', shadow_cfg.get('plate_color_switch_gain_ratio', 1.2))
+        )
+        self.plate_color_switch_margin = float(
+            shadow_cfg.get('color_switch_margin', shadow_cfg.get('plate_color_switch_margin', 0.5))
+        )
         self.shadow_pool = {}
         self.event_log_path = Path(event_log_path) if event_log_path else None
         if self.event_log_path:
@@ -175,6 +216,8 @@ class EventManager:
                 with self.upload_log_sent.open('w', encoding='utf-8') as f:
                     f.write('capture_time,id,type,payload\n')
         self.frame_timing = {}
+        self.log_throttler = WindowedLogThrottler()
+        self.latency_log_window_seconds = float(self.logic.get('latency_log_window_seconds', 10.0))
 
     def record_frame_timing(self, frame_idx, capture_ts, infer_ts):
         if capture_ts is None or infer_ts is None:
@@ -207,8 +250,21 @@ class EventManager:
             'effective_wash_frames': 0,
             'last_frame_idx': frame_idx,
             'last_frame': None,
+            'plate_text_latest': '',
+            'plate_text_locked': '',
+            'plate_text_locked_is_guess': False,
+            'plate_text_switch_candidate': '',
+            'plate_text_switch_streak': 0,
             'plate_text': '',
             'plate_is_guess': False,
+            'plate_color_latest': '',
+            'plate_color_latest_conf': 0.0,
+            'plate_color_locked': '',
+            'plate_color_locked_conf': 0.0,
+            'plate_color_vote_history': deque(maxlen=160),
+            'plate_color_votes': {},
+            'plate_color_switch_candidate': '',
+            'plate_color_switch_streak': 0,
             'plate_color': '',
             'plate_color_conf': 0.0,
             'plate_type': '',
@@ -286,18 +342,25 @@ class EventManager:
             st['last_plate_box'] = plate_box
         normalized_plate = normalize_plate_text(plate_text)
         if normalized_plate:
-            st['plate_text'] = normalized_plate
-            st['plate_is_guess'] = bool(plate_is_guess)
+            st['plate_text_latest'] = normalized_plate
             self._add_shadow_candidate(track_id, normalized_plate, plate_conf, frame_idx)
+            self._update_locked_plate_text(track_id, st, frame_idx)
         elif plate_conf and plate_conf > 0.0:
             self._add_shadow_candidate(track_id, plate_text, plate_conf, frame_idx)
+            self._update_locked_plate_text(track_id, st, frame_idx)
         if plate_color:
-            st['plate_color'] = str(plate_color)
-            if plate_color_conf is not None:
-                try:
-                    st['plate_color_conf'] = float(plate_color_conf)
-                except (TypeError, ValueError):
-                    pass
+            plate_color_latest = str(plate_color).strip()
+            if plate_color_latest:
+                st['plate_color_latest'] = plate_color_latest
+                parsed_color_conf = 0.0
+                if plate_color_conf is not None:
+                    try:
+                        parsed_color_conf = float(plate_color_conf)
+                    except (TypeError, ValueError):
+                        parsed_color_conf = 0.0
+                st['plate_color_latest_conf'] = parsed_color_conf
+                self._update_locked_plate_color(st, plate_color_latest, parsed_color_conf, frame_idx)
+        self._sync_plate_legacy_fields(st)
         if plate_type:
             st['plate_type'] = str(plate_type)
         if confirmed:
@@ -747,7 +810,17 @@ class EventManager:
                 cap_str = datetime.fromtimestamp(capture_ts_val).strftime("%H:%M:%S.%f")[:-3]
                 infer_str = datetime.fromtimestamp(infer_ts_val).strftime("%H:%M:%S.%f")[:-3]
                 event_str = datetime.fromtimestamp(now_ts).strftime("%H:%M:%S.%f")[:-3]
-                print(f"[latency] 帧={frame_idx} 轨迹={track_id} 类型={event_type} 捕获={cap_str} 推理完成={infer_str} 告警发送={event_str} 解码→推理={decode_to_infer*1000:.1f}ms 推理→告警={infer_to_event*1000:.1f}ms 总时延={total_latency*1000:.1f}ms")
+                self.log_throttler.log(
+                    key='latency.event',
+                    message=(
+                        f"[latency] 帧={frame_idx} 轨迹={track_id} 类型={event_type} "
+                        f"捕获={cap_str} 推理完成={infer_str} 告警发送={event_str} "
+                        f"解码→推理={decode_to_infer*1000:.1f}ms 推理→告警={infer_to_event*1000:.1f}ms "
+                        f"总时延={total_latency*1000:.1f}ms"
+                    ),
+                    window_seconds=self.latency_log_window_seconds,
+                    emit=print,
+                )
             except Exception:
                 pass
         event_path = self.events_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.json'
@@ -848,33 +921,198 @@ class EventManager:
         while pool and frame_idx - pool[0]['frame'] > self.shadow_max_age:
             pool.popleft()
 
-    def _resolve_plate_with_shadow(self, track_id, track_state, frame_idx):
-        text = track_state.get('plate_text', '')
-        if text:
-            return text, bool(track_state.get('plate_is_guess', False))
+    @staticmethod
+    def _plate_margin_ok(best_weight, second_weight, ratio):
+        if best_weight <= 0:
+            return False
+        if second_weight <= 0:
+            return True
+        gap = best_weight - second_weight
+        if gap <= 0:
+            return False
+        return (gap / max(best_weight, 1e-6)) >= float(ratio)
+
+    def _rank_plate_shadow_candidates(self, track_id, frame_idx):
         pool = self.shadow_pool.get(track_id)
         if not pool:
-            return '', False
-        total = len(pool)
-        best_text = ''
-        best_score = 0.0
-        unique = set(entry['text'] for entry in pool if entry['text'])
-        for candidate in unique:
-            conf_sum = 0.0
-            count = 0
-            for entry in pool:
-                if entry['text'] != candidate:
-                    continue
-                decay = max(0.2, 1.0 - (frame_idx - entry['frame']) / max(self.shadow_max_age, 1))
-                conf_sum += (entry['conf'] or 0.5) * decay
-                count += 1
-            if count == 0:
+            return []
+        min_frame = frame_idx - self.plate_text_window_frames + 1
+        stats = {}
+        for entry in pool:
+            text = entry.get('text', '')
+            if not text:
                 continue
-            score = (conf_sum / count) * (count / total)
-            if score > best_score:
-                best_score = score
-                best_text = candidate
-        return best_text, bool(best_text)
+            hit_frame = int(entry.get('frame', frame_idx))
+            if hit_frame < min_frame:
+                continue
+            age = max(0, frame_idx - hit_frame)
+            decay = max(0.35, 1.0 - age / max(self.plate_text_window_frames, 1))
+            conf = float(entry.get('conf', 0.5) or 0.5)
+            weight = max(conf, 0.05) * decay
+            info = stats.setdefault(text, {'hits': 0, 'weight': 0.0})
+            info['hits'] += 1
+            info['weight'] += weight
+        ranked = [(text, info['hits'], info['weight']) for text, info in stats.items() if info['hits'] > 0]
+        ranked.sort(key=lambda item: (item[2], item[1], item[0]), reverse=True)
+        return ranked
+
+    def _update_locked_plate_text(self, track_id, track_state, frame_idx):
+        ranked = self._rank_plate_shadow_candidates(track_id, frame_idx)
+        if not ranked:
+            return
+        best_text, best_hits, best_weight = ranked[0]
+        second_weight = ranked[1][2] if len(ranked) > 1 else 0.0
+        locked_text = (track_state.get('plate_text_locked') or '').strip()
+        if not locked_text:
+            if (
+                best_hits >= self.plate_lock_frames
+                and self._plate_margin_ok(best_weight, second_weight, self.plate_text_margin_ratio)
+            ):
+                track_state['plate_text_locked'] = best_text
+                track_state['plate_text_locked_is_guess'] = False
+                track_state['plate_text_switch_candidate'] = ''
+                track_state['plate_text_switch_streak'] = 0
+            return
+        if best_text == locked_text:
+            track_state['plate_text_switch_candidate'] = ''
+            track_state['plate_text_switch_streak'] = 0
+            return
+        locked_weight = 0.0
+        for cand_text, _cand_hits, cand_weight in ranked:
+            if cand_text == locked_text:
+                locked_weight = cand_weight
+                break
+        stronger_than_locked = best_weight >= max(
+            locked_weight * self.plate_text_switch_gain_ratio,
+            locked_weight + 0.1,
+        )
+        margin_ok = self._plate_margin_ok(best_weight, second_weight, self.plate_text_switch_margin_ratio)
+        if stronger_than_locked and margin_ok and best_hits >= (self.plate_lock_frames + 1):
+            if track_state.get('plate_text_switch_candidate') == best_text:
+                track_state['plate_text_switch_streak'] = int(track_state.get('plate_text_switch_streak', 0)) + 1
+            else:
+                track_state['plate_text_switch_candidate'] = best_text
+                track_state['plate_text_switch_streak'] = 1
+            if int(track_state.get('plate_text_switch_streak', 0)) >= self.plate_text_switch_min_consecutive:
+                track_state['plate_text_locked'] = best_text
+                track_state['plate_text_locked_is_guess'] = False
+                track_state['plate_text_switch_candidate'] = ''
+                track_state['plate_text_switch_streak'] = 0
+            return
+        track_state['plate_text_switch_candidate'] = ''
+        track_state['plate_text_switch_streak'] = 0
+
+    @staticmethod
+    def _recent_color_streak(history, color, min_frame):
+        streak = 0
+        for entry in reversed(history):
+            if int(entry.get('frame', -1)) < min_frame:
+                break
+            if entry.get('color') == color:
+                streak += 1
+                continue
+            break
+        return streak
+
+    def _update_locked_plate_color(self, track_state, color, color_conf, frame_idx):
+        color = (color or '').strip()
+        if not color:
+            return
+        if color_conf < self.plate_color_min_confidence:
+            return
+        history = track_state.get('plate_color_vote_history')
+        if not isinstance(history, deque):
+            history = deque(maxlen=max(self.plate_color_window_frames * 4, 60))
+            track_state['plate_color_vote_history'] = history
+        history.append({'color': color, 'conf': float(color_conf), 'frame': int(frame_idx)})
+        min_frame = frame_idx - self.plate_color_window_frames + 1
+        while history and int(history[0].get('frame', -1)) < min_frame:
+            history.popleft()
+
+        votes = {}
+        for entry in history:
+            entry_color = (entry.get('color') or '').strip()
+            if not entry_color:
+                continue
+            info = votes.setdefault(entry_color, {'hits': 0, 'sum_conf': 0.0})
+            info['hits'] += 1
+            info['sum_conf'] += float(entry.get('conf', 0.0) or 0.0)
+        track_state['plate_color_votes'] = votes
+        if not votes:
+            return
+        ranked = sorted(votes.items(), key=lambda kv: (kv[1]['sum_conf'], kv[1]['hits'], kv[0]), reverse=True)
+        best_color, best_stats = ranked[0]
+        best_hits = int(best_stats.get('hits', 0))
+        best_sum = float(best_stats.get('sum_conf', 0.0))
+
+        locked_color = (track_state.get('plate_color_locked') or '').strip()
+        if not locked_color:
+            if best_hits >= self.plate_color_lock_frames:
+                track_state['plate_color_locked'] = best_color
+                track_state['plate_color_locked_conf'] = max(best_sum / max(best_hits, 1), 0.0)
+                track_state['plate_color_switch_candidate'] = ''
+                track_state['plate_color_switch_streak'] = 0
+            return
+
+        if best_color == locked_color:
+            track_state['plate_color_switch_candidate'] = ''
+            track_state['plate_color_switch_streak'] = 0
+            return
+
+        locked_sum = float(votes.get(locked_color, {}).get('sum_conf', 0.0) or 0.0)
+        stronger = best_sum >= max(
+            locked_sum * self.plate_color_switch_gain_ratio,
+            locked_sum + self.plate_color_switch_margin,
+        )
+        if not stronger or best_hits < (self.plate_color_lock_frames + 1):
+            track_state['plate_color_switch_candidate'] = ''
+            track_state['plate_color_switch_streak'] = 0
+            return
+        streak = self._recent_color_streak(history, best_color, min_frame)
+        if track_state.get('plate_color_switch_candidate') == best_color:
+            track_state['plate_color_switch_streak'] = max(int(track_state.get('plate_color_switch_streak', 0)), streak)
+        else:
+            track_state['plate_color_switch_candidate'] = best_color
+            track_state['plate_color_switch_streak'] = streak
+        if int(track_state.get('plate_color_switch_streak', 0)) >= self.plate_color_switch_min_consecutive:
+            track_state['plate_color_locked'] = best_color
+            track_state['plate_color_locked_conf'] = max(best_sum / max(best_hits, 1), 0.0)
+            track_state['plate_color_switch_candidate'] = ''
+            track_state['plate_color_switch_streak'] = 0
+
+    def _sync_plate_legacy_fields(self, track_state):
+        locked_text = (track_state.get('plate_text_locked') or '').strip()
+        latest_text = (track_state.get('plate_text_latest') or '').strip()
+        if locked_text:
+            track_state['plate_text'] = locked_text
+            track_state['plate_is_guess'] = bool(track_state.get('plate_text_locked_is_guess', False))
+        elif latest_text:
+            track_state['plate_text'] = latest_text
+            track_state['plate_is_guess'] = True
+        else:
+            track_state['plate_text'] = ''
+            track_state['plate_is_guess'] = False
+
+        locked_color = (track_state.get('plate_color_locked') or '').strip()
+        latest_color = (track_state.get('plate_color_latest') or '').strip()
+        if locked_color:
+            track_state['plate_color'] = locked_color
+            track_state['plate_color_conf'] = float(track_state.get('plate_color_locked_conf', 0.0) or 0.0)
+        elif latest_color:
+            track_state['plate_color'] = latest_color
+            track_state['plate_color_conf'] = float(track_state.get('plate_color_latest_conf', 0.0) or 0.0)
+        else:
+            track_state['plate_color'] = ''
+            track_state['plate_color_conf'] = 0.0
+
+    def _resolve_plate_with_shadow(self, track_id, track_state, frame_idx):
+        locked_text = (track_state.get('plate_text_locked') or '').strip()
+        if locked_text:
+            return locked_text, bool(track_state.get('plate_text_locked_is_guess', False))
+        ranked = self._rank_plate_shadow_candidates(track_id, frame_idx)
+        if not ranked:
+            return '', False
+        return ranked[0][0], True
 
     def _compute_effective_wash_duration(self, track_state, frame_idx):
         frames = track_state.get('effective_wash_frames', 0)
@@ -987,15 +1225,27 @@ class EventManager:
         return counts
 
     def _infer_plate_color(self, track_state):
-        tracked_color = (track_state.get('plate_color') or '').strip()
-        if tracked_color:
+        locked_color = (track_state.get('plate_color_locked') or '').strip()
+        if locked_color:
             try:
-                tracked_conf = float(track_state.get('plate_color_conf', 0.0) or 0.0)
+                locked_conf = float(track_state.get('plate_color_locked_conf', 0.0) or 0.0)
             except (TypeError, ValueError):
-                tracked_conf = 0.0
-            return tracked_color, tracked_conf
+                locked_conf = 0.0
+            return locked_color, locked_conf
+        latest_color = (track_state.get('plate_color_latest') or '').strip()
+        if latest_color:
+            try:
+                latest_conf = float(track_state.get('plate_color_latest_conf', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                latest_conf = 0.0
+            return latest_color, latest_conf
         vehicle = (track_state.get('vehicle_cls') or '').lower()
-        plate = track_state.get('plate_text', '') or ''
+        plate = (
+            track_state.get('plate_text_locked')
+            or track_state.get('plate_text_latest')
+            or track_state.get('plate_text')
+            or ''
+        )
         length = len(plate)
         if vehicle == 'car':
             if length == 8:

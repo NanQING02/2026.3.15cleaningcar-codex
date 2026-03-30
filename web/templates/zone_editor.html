@@ -627,9 +627,9 @@
         this.loadPerIdVideos();
         this.fetchInferenceStatus();
         this.refreshInferenceLogs();
-        this.inferenceStatusTimer = setInterval(() => this.fetchInferenceStatus(), 5000);
-        this.inferenceLogTimer = setInterval(() => this.refreshInferenceLogs(true), 8000);
-        this.debugFrameTimer = setInterval(() => this.refreshDebugImage(), 5000);
+        this.inferenceStatusTimer = setInterval(() => this.fetchInferenceStatus(), 10000);
+        this.inferenceLogTimer = setInterval(() => this.refreshInferenceLogs(true), 15000);
+        this.debugFrameTimer = setInterval(() => this.refreshDebugImage(), 10000);
       },
       beforeUnmount() {
         if (this.inferenceStatusTimer) clearInterval(this.inferenceStatusTimer);

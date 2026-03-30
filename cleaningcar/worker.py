@@ -172,6 +172,11 @@ class DetectWorker(threading.Thread):
                 score = float(item.get("score", 0.0))
                 plate_text = str(item.get("text", "") or "")
                 plate_color = str(item.get("plate_color", "") or "")
+                raw_color_conf = item.get("plate_color_conf")
+                try:
+                    plate_color_conf = float(raw_color_conf) if raw_color_conf is not None else None
+                except (TypeError, ValueError):
+                    plate_color_conf = None
                 plate_type = str(item.get("plate_type", "") or "")
 
                 label = f"{label_name} {score:.2f}"
@@ -213,7 +218,7 @@ class DetectWorker(threading.Thread):
                         "box": [x1, y1, x2, y2],
                         "text": plate_text,
                         "plate_color": plate_color,
-                        "plate_color_conf": None,
+                        "plate_color_conf": plate_color_conf,
                         "plate_type": plate_type,
                         "landmarks": item.get("landmarks"),
                         "row_idx": len(csv_rows) - 1,

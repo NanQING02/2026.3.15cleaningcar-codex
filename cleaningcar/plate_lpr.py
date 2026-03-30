@@ -196,25 +196,37 @@ class DualPlateRecognizer:
         out = _restore_box(out, r, left, top)
         return out.astype(np.float32)
 
-    def _recognize(self, plate_bgr: np.ndarray) -> Tuple[str, str]:
+    @staticmethod
+    def _softmax_1d(logits: np.ndarray) -> np.ndarray:
+        vec = np.asarray(logits, dtype=np.float32).reshape(-1)
+        if vec.size == 0:
+            return np.empty((0,), dtype=np.float32)
+        shifted = vec - float(np.max(vec))
+        exp_v = np.exp(shifted).astype(np.float32)
+        denom = float(np.sum(exp_v))
+        if denom <= 1e-12:
+            return np.zeros_like(vec, dtype=np.float32)
+        return (exp_v / denom).astype(np.float32)
+
+    def _recognize(self, plate_bgr: np.ndarray) -> Tuple[str, str, float]:
         if plate_bgr is None or plate_bgr.size == 0:
-            return "", ""
+            return "", "", 0.0
 
         plate = resize_bgr(plate_bgr, (168, 48))
         inp = np.expand_dims(plate, axis=0).astype(np.uint8)
         outputs = self.recognizer.inference(inputs=[inp], data_format=["nhwc"])
         if not outputs or len(outputs) < 2:
-            return "", ""
+            return "", "", 0.0
 
         plate_logits = outputs[0]
         color_logits = outputs[1]
         if plate_logits is None or color_logits is None:
-            return "", ""
+            return "", "", 0.0
 
         if plate_logits.ndim == 3:
             plate_logits = plate_logits[0]
         if plate_logits.ndim != 2:
-            return "", ""
+            return "", "", 0.0
 
         if plate_logits.shape[1] == len(_PLATE_NAME):
             token_ids = np.argmax(plate_logits, axis=1)
@@ -224,9 +236,13 @@ class DualPlateRecognizer:
             token_ids = np.argmax(plate_logits, axis=1)
 
         text = _decode_plate(token_ids)
-        color_idx = int(np.argmax(color_logits))
+        color_probs = self._softmax_1d(color_logits)
+        if color_probs.size == 0:
+            return text, "", 0.0
+        color_idx = int(np.argmax(color_probs))
         plate_color = _PLATE_COLORS[color_idx] if 0 <= color_idx < len(_PLATE_COLORS) else ""
-        return text, plate_color
+        plate_color_conf = float(color_probs[color_idx]) if 0 <= color_idx < color_probs.size else 0.0
+        return text, plate_color, plate_color_conf
 
     def infer_frame(
         self,
@@ -246,11 +262,11 @@ class DualPlateRecognizer:
 
             roi = _four_point_transform(frame_bgr, landmarks_np)
             if roi.size == 0:
-                text, plate_color = "", ""
+                text, plate_color, plate_color_conf = "", "", 0.0
             else:
                 if plate_type_id == 1:
                     roi = _split_merge_double_plate(roi)
-                text, plate_color = self._recognize(roi)
+                text, plate_color, plate_color_conf = self._recognize(roi)
 
             results.append(
                 {
@@ -258,6 +274,7 @@ class DualPlateRecognizer:
                     "landmarks": landmarks_np.tolist(),
                     "text": text or "",
                     "plate_color": plate_color or "",
+                    "plate_color_conf": float(plate_color_conf),
                     "plate_type": plate_type,
                     "score": score,
                 }

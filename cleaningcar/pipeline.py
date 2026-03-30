@@ -24,6 +24,7 @@ from .constants import (
     select_box_color,
 )
 from .events import EventManager, EventUploader
+from .log_throttle import WindowedLogThrottle
 from .monitoring import monitor_loop
 from .plate import PlateTextTracker
 from .resize_accel import resize_backend_name, resize_bgr
@@ -52,11 +53,224 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PER_ID_VIDEO_DIR = (PROJECT_ROOT / 'video_result' / 'per_id').resolve()
 
 
+def _normalize_track_id(value):
+    try:
+        track_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return track_id if track_id > 0 else None
+
+
+def _ensure_plate_binding_state(frame_idx, state=None):
+    state = state if isinstance(state, dict) else {}
+    state.setdefault('locked_car_id', None)
+    state.setdefault('candidate_car_id', None)
+    state.setdefault('candidate_hits', 0)
+    state.setdefault('best_score', 0.0)
+    state.setdefault('last_seen', int(frame_idx))
+    state.setdefault('locked_missing_hits', 0)
+    return state
+
+
+def _plate_car_match_score(plate_box, car_box):
+    if plate_box is None or car_box is None:
+        return 0.0
+    px1, py1, px2, py2 = plate_box
+    pcenter = ((px1 + px2) * 0.5, (py1 + py2) * 0.5)
+    score = float(box_iou(plate_box, car_box))
+    if point_in_box(pcenter, car_box):
+        score = max(score, 1.0)
+    return score
+
+
+def _stabilize_plate_binding(
+    state,
+    frame_idx,
+    candidate_car_id,
+    candidate_score,
+    locked_score,
+    lock_hits=2,
+    switch_hits=3,
+):
+    state = _ensure_plate_binding_state(frame_idx, state)
+    state['last_seen'] = int(frame_idx)
+    lock_hits = max(1, int(lock_hits))
+    switch_hits = max(1, int(switch_hits))
+    candidate_car_id = _normalize_track_id(candidate_car_id)
+    candidate_score = float(candidate_score or 0.0)
+    locked_car_id = _normalize_track_id(state.get('locked_car_id'))
+    state['locked_car_id'] = locked_car_id
+
+    if candidate_car_id is None:
+        state['candidate_car_id'] = None
+        state['candidate_hits'] = 0
+        state['best_score'] = 0.0
+        return state
+
+    if locked_car_id is None:
+        if state.get('candidate_car_id') == candidate_car_id:
+            state['candidate_hits'] = int(state.get('candidate_hits', 0)) + 1
+            state['best_score'] = max(float(state.get('best_score', 0.0)), candidate_score)
+        else:
+            state['candidate_car_id'] = candidate_car_id
+            state['candidate_hits'] = 1
+            state['best_score'] = candidate_score
+        if state['candidate_hits'] >= lock_hits:
+            state['locked_car_id'] = candidate_car_id
+            state['candidate_car_id'] = None
+            state['candidate_hits'] = 0
+            state['best_score'] = 0.0
+            state['locked_missing_hits'] = 0
+        return state
+
+    if candidate_car_id == locked_car_id:
+        state['candidate_car_id'] = None
+        state['candidate_hits'] = 0
+        state['best_score'] = 0.0
+        state['locked_missing_hits'] = 0
+        return state
+
+    is_better = locked_score is not None and candidate_score > float(locked_score)
+    if not is_better:
+        state['candidate_car_id'] = None
+        state['candidate_hits'] = 0
+        state['best_score'] = 0.0
+        return state
+
+    if state.get('candidate_car_id') == candidate_car_id:
+        state['candidate_hits'] = int(state.get('candidate_hits', 0)) + 1
+        state['best_score'] = max(float(state.get('best_score', 0.0)), candidate_score)
+    else:
+        state['candidate_car_id'] = candidate_car_id
+        state['candidate_hits'] = 1
+        state['best_score'] = candidate_score
+
+    if state['candidate_hits'] >= switch_hits:
+        state['locked_car_id'] = candidate_car_id
+        state['candidate_car_id'] = None
+        state['candidate_hits'] = 0
+        state['best_score'] = 0.0
+        state['locked_missing_hits'] = 0
+    return state
+
+
+def _cleanup_plate_binding_states(
+    plate_binding_states,
+    frame_idx,
+    active_car_ids,
+    plate_timeout_frames,
+    vehicle_missing_frames,
+):
+    frame_idx = int(frame_idx)
+    plate_timeout_frames = max(0, int(plate_timeout_frames))
+    vehicle_missing_frames = max(0, int(vehicle_missing_frames))
+    active_car_ids = set(active_car_ids or ())
+    removed_locked_ids = set()
+
+    for plate_id in list(plate_binding_states.keys()):
+        state = _ensure_plate_binding_state(frame_idx, plate_binding_states.get(plate_id))
+        plate_binding_states[plate_id] = state
+        last_seen = int(state.get('last_seen', frame_idx))
+        locked_car_id = _normalize_track_id(state.get('locked_car_id'))
+        state['locked_car_id'] = locked_car_id
+
+        if frame_idx - last_seen > plate_timeout_frames:
+            if locked_car_id is not None:
+                removed_locked_ids.add(locked_car_id)
+            plate_binding_states.pop(plate_id, None)
+            continue
+
+        if locked_car_id is None:
+            state['locked_missing_hits'] = 0
+            continue
+        if locked_car_id in active_car_ids:
+            state['locked_missing_hits'] = 0
+            continue
+        state['locked_missing_hits'] = int(state.get('locked_missing_hits', 0)) + 1
+        if state['locked_missing_hits'] > vehicle_missing_frames:
+            removed_locked_ids.add(locked_car_id)
+            plate_binding_states.pop(plate_id, None)
+
+    return removed_locked_ids
+
+
+def _refresh_car_plate_cache_from_locked(
+    plate_binding_states,
+    car_plate_cache,
+    active_car_ids,
+    car_plate_cache_ttl,
+):
+    active_car_ids = set(active_car_ids or ())
+    car_plate_cache_ttl = max(0, int(car_plate_cache_ttl))
+    locked_car_to_plate = {}
+
+    for plate_id, state in plate_binding_states.items():
+        locked_car_id = _normalize_track_id(state.get('locked_car_id'))
+        if locked_car_id is None:
+            continue
+        if locked_car_id in locked_car_to_plate:
+            old_plate_id = locked_car_to_plate[locked_car_id]
+            old_state = plate_binding_states.get(old_plate_id) or {}
+            old_seen = int(old_state.get('last_seen', -1))
+            new_seen = int(state.get('last_seen', -1))
+            if old_seen >= new_seen:
+                continue
+        locked_car_to_plate[locked_car_id] = int(plate_id)
+
+    for car_id in list(car_plate_cache.keys()):
+        entry = car_plate_cache.get(car_id) or {}
+        locked_plate_id = locked_car_to_plate.get(car_id)
+        if locked_plate_id is None or int(entry.get('plate_id', -1)) != int(locked_plate_id):
+            car_plate_cache.pop(car_id, None)
+
+    for car_id, plate_id in locked_car_to_plate.items():
+        if car_id not in active_car_ids:
+            continue
+        car_plate_cache[car_id] = {'plate_id': plate_id, 'age': 0}
+
+    for car_id in list(car_plate_cache.keys()):
+        if car_id in active_car_ids:
+            continue
+        car_plate_cache[car_id]['age'] = int(car_plate_cache[car_id].get('age', 0)) + 1
+        if car_plate_cache[car_id]['age'] > car_plate_cache_ttl:
+            car_plate_cache.pop(car_id, None)
+
+    return locked_car_to_plate
+
+
 def process_video(path, args):
-    cap = create_video_reader(path, args)
+    cap, decode_meta = create_video_reader(path, args)
+
+    def _log_decode_open_result(stage, meta, success):
+        mode = str((meta or {}).get('decode_mode') or 'sw')
+        fallback_used = bool((meta or {}).get('fallback_used'))
+        fallback_reason = str((meta or {}).get('fallback_reason') or '')
+        source_kind = str((meta or {}).get('source_kind') or 'other')
+        if success:
+            if mode == 'hw' and not fallback_used:
+                print(f'[reader] {stage}成功：硬解成功 source_kind={source_kind}')
+                return
+            if mode == 'sw' and fallback_used:
+                print(
+                    f'[reader] {stage}成功：硬解失败已切软解 '
+                    f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
+                )
+                return
+            print(f'[reader] {stage}成功：软解成功 source_kind={source_kind}')
+            return
+        if fallback_used:
+            print(
+                f'[reader] {stage}失败：硬解失败已切软解，但软解也失败 '
+                f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
+            )
+            return
+        print(f'[reader] {stage}失败：软解失败 source_kind={source_kind}')
+
     if cap is None or not hasattr(cap, 'isOpened') or not cap.isOpened():
+        _log_decode_open_result('首次打开', decode_meta, False)
         print(f'failed to open {path}')
         return
+    _log_decode_open_result('首次打开', decode_meta, True)
     fps = None
     if hasattr(cap, 'get'):
         try:
@@ -86,6 +300,11 @@ def process_video(path, args):
     print(f'[reader] source_mode={source_mode}')
     consecutive_fails = 0
     reconnect_count = 0
+    log_throttle = WindowedLogThrottle()
+
+    def _throttled_log(key, message, window_seconds=10.0):
+        log_throttle.log(key=key, message=message, window_seconds=window_seconds, emit=print)
+
     config_path = str(getattr(args, '_config_path', config.get('config_path', '')) or '')
     config_name = str(config.get('config_name') or (Path(config_path).name if config_path else ''))
     config_namespace_hint = Path(config_path).stem if config_path else ''
@@ -250,6 +469,9 @@ def process_video(path, args):
 
     car_plate_cache = {}
     car_plate_cache_ttl = int(config.get('car_plate_cache_ttl', CAR_PLATE_CACHE_TTL))
+    plate_binding_states = {}
+    plate_binding_timeout_frames = max(1, int(config.get('track_timeout_frames', 60)))
+    plate_binding_vehicle_missing_frames = max(1, int(config.get('track_timeout_frames', 60)))
     alias_confirm = {}
     alias_timeout = int(config.get('track_timeout_frames', 60))
     enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
@@ -503,8 +725,11 @@ def process_video(path, args):
         dropped_frame_ids.add(frame_idx)
         raw_frame_cache.pop(frame_idx, None)
         dropped_frame_count += 1
-        if dropped_frame_count <= 5 or dropped_frame_count % 50 == 0:
-            print(f'[realtime] dropped stale frame idx={frame_idx}, total={dropped_frame_count}')
+        _throttled_log(
+            'realtime.dropped_stale_frame',
+            f'[realtime] dropped stale frame idx={frame_idx}, total={dropped_frame_count}',
+            window_seconds=10.0,
+        )
 
     def _advance_dropped_frames():
         nonlocal next_frame_to_write
@@ -816,7 +1041,7 @@ def process_video(path, args):
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
     def drain_results(block=True):
-        nonlocal next_frame_to_write, finished_workers, car_plate_cache, per_id_writers
+        nonlocal next_frame_to_write, finished_workers, car_plate_cache, plate_binding_states, per_id_writers
         nonlocal enable_per_id_video, latest_raw_frame, latest_annotated_frame, dropped_frame_ids
         nonlocal latest_frame_idx, latest_capture_ts, last_progress_ts, last_result_ts
         try:
@@ -875,26 +1100,22 @@ def process_video(path, args):
                         x1, y1, _, _ = det_ref['box']
                         cv2.putText(frame_out, f'CID:{track_id}', (x1, y1 - 5),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1, cv2.LINE_AA)
+                active_car_ids = {det_ref.get('track_id', -1) for det_ref in vehicle_payload_refs if det_ref.get('track_id', -1) > 0}
                 license_dets = [d for d in det_payload if d.get('cls') == LICENSE_CLASS] if det_payload else []
                 if license_dets and car_boxes:
                     for det in license_dets:
-                        plate_box = det['box']
-                        px1, py1, px2, py2 = plate_box
-                        pcenter = ((px1 + px2) * 0.5, (py1 + py2) * 0.5)
                         best_id = None
                         best_score = 0.0
+                        plate_box = det['box']
                         for car_id, cbox in car_boxes.items():
-                            score = box_iou(plate_box, cbox)
-                            if point_in_box(pcenter, cbox):
-                                score = max(score, 1.0)
+                            score = _plate_car_match_score(plate_box, cbox)
                             if score > best_score:
                                 best_score = score
                                 best_id = car_id
-                        if best_id is not None and (best_score >= PLATE_CAR_LINK_IOU or point_in_box(pcenter, car_boxes[best_id])):
-                            det['car_track'] = best_id
-                            det['vehicle_box'] = car_boxes[best_id]
-                car_to_plate = {}
-                plate_to_car = {}
+                        if best_id is not None and best_score >= PLATE_CAR_LINK_IOU:
+                            det['candidate_car_track'] = best_id
+                            det['candidate_score'] = float(best_score)
+                            det['vehicle_box_candidate'] = car_boxes[best_id]
                 plate_track_info = {}
                 updates = plate_tracker.update(next_frame_to_write, license_dets)
                 for det, upd in zip(license_dets, updates):
@@ -906,27 +1127,45 @@ def process_video(path, args):
                         rows[row_idx][-1] = det.get('text', '')
                         if text_val:
                             rows[row_idx][-2] = text_val
-                        track_val = det.get('car_track', -1)
-                        rows[row_idx][7] = track_val if track_val > 0 else plate_id
                     if plate_id > 0:
+                        state = _ensure_plate_binding_state(
+                            next_frame_to_write,
+                            plate_binding_states.get(plate_id),
+                        )
+                        plate_binding_states[plate_id] = state
+                        locked_car_id = _normalize_track_id(state.get('locked_car_id'))
+                        locked_score = None
+                        if locked_car_id is not None and locked_car_id in car_boxes:
+                            locked_score = _plate_car_match_score(det['box'], car_boxes[locked_car_id])
+                        _stabilize_plate_binding(
+                            state,
+                            frame_idx=next_frame_to_write,
+                            candidate_car_id=det.get('candidate_car_track', -1),
+                            candidate_score=float(det.get('candidate_score', 0.0)),
+                            locked_score=locked_score,
+                        )
+                        locked_car_id = _normalize_track_id(state.get('locked_car_id'))
+                        resolved_track = locked_car_id if locked_car_id is not None else plate_id
+                        if row_idx is not None and 0 <= row_idx < len(rows):
+                            rows[row_idx][7] = resolved_track
+                        vehicle_box = None
+                        if locked_car_id is not None and locked_car_id in car_boxes:
+                            vehicle_box = car_boxes[locked_car_id]
+                        elif det.get('vehicle_box_candidate') is not None:
+                            vehicle_box = det.get('vehicle_box_candidate')
+                        if locked_car_id is not None and vehicle_box is not None:
+                            car_boxes.setdefault(locked_car_id, vehicle_box)
                         plate_track_info[plate_id] = {
                             'box': det['box'],
                             'text': text_val,
                             'is_guess': is_guess,
-                            'vehicle_box': det.get('vehicle_box'),
+                            'vehicle_box': vehicle_box,
                             'score': float(det.get('score', 0.0)),
                             'plate_color': det.get('plate_color', ''),
                             'plate_color_conf': det.get('plate_color_conf'),
                             'plate_type': det.get('plate_type', ''),
+                            'car_id': locked_car_id if locked_car_id is not None else -1,
                         }
-                        car_id = det.get('car_track', -1)
-                        if car_id > 0:
-                            car_to_plate[car_id] = plate_id
-                            plate_to_car[plate_id] = car_id
-                        if car_id > 0 and det.get('vehicle_box') is not None:
-                            car_boxes.setdefault(car_id, det['vehicle_box'])
-                        if car_id > 0:
-                            car_plate_cache[car_id] = {'plate_id': plate_id, 'age': 0}
                         if video_writer and text_val:
                             x1, y1, _, _ = det['box']
                             draw_text(
@@ -938,20 +1177,31 @@ def process_video(path, args):
                                 thickness=1,
                                 anchor='lb',
                             )
+                removed_locked_ids = _cleanup_plate_binding_states(
+                    plate_binding_states=plate_binding_states,
+                    frame_idx=next_frame_to_write,
+                    active_car_ids=active_car_ids,
+                    plate_timeout_frames=plate_binding_timeout_frames,
+                    vehicle_missing_frames=plate_binding_vehicle_missing_frames,
+                )
+                for removed_car_id in removed_locked_ids:
+                    car_plate_cache.pop(removed_car_id, None)
+                car_to_plate = _refresh_car_plate_cache_from_locked(
+                    plate_binding_states=plate_binding_states,
+                    car_plate_cache=car_plate_cache,
+                    active_car_ids=active_car_ids,
+                    car_plate_cache_ttl=car_plate_cache_ttl,
+                )
+                plate_to_car = {plate_id: car_id for car_id, plate_id in car_to_plate.items()}
                 alias_seen = set()
                 plates_with_updates = set()
                 for plate_id, info in plate_track_info.items():
-                    car_id = plate_to_car.get(plate_id, -1)
+                    car_id = plate_to_car.get(plate_id, info.get('car_id', -1))
                     track_key = car_id if car_id > 0 else plate_id
                     vehicle_box = info.get('vehicle_box')
                     if vehicle_box is None:
                         if car_id > 0 and car_id in car_boxes:
                             vehicle_box = car_boxes[car_id]
-                        else:
-                            for cid, p_id in car_to_plate.items():
-                                if p_id == plate_id and cid in car_boxes:
-                                    vehicle_box = car_boxes[cid]
-                                    break
                     anchor_pt = anchor_point_for(vehicle_box or info['box'])
                     confirmed_alias = mark_alias_confirm(track_key, bool(info.get('text')), next_frame_to_write, True)
                     event_manager.update_track(
@@ -977,18 +1227,15 @@ def process_video(path, args):
                     )
                     alias_seen.add(track_key)
                     plates_with_updates.add(track_key)
-                active_car_ids = set()
                 for det_ref in vehicle_payload_refs:
                     car_id = det_ref.get('track_id', -1)
                     if car_id <= 0:
                         continue
-                    active_car_ids.add(car_id)
                     alias_plate_id = car_to_plate.get(car_id)
                     if alias_plate_id:
                         row_idx = det_ref.get('row_idx', -1)
                         if row_idx is not None and 0 <= row_idx < len(rows):
                             rows[row_idx][7] = car_id
-                        car_plate_cache[car_id] = {'plate_id': alias_plate_id, 'age': 0}
                         if car_id not in plates_with_updates:
                             known_text = ''
                             track_state = event_manager.tracks.get(car_id)
@@ -1072,12 +1319,6 @@ def process_video(path, args):
                     )
                     annotate_locked_label(fallback_id, det_ref, rows, frame_out)
                     alias_seen.add(fallback_id)
-                for car_id in list(car_plate_cache.keys()):
-                    if car_id in active_car_ids:
-                        continue
-                    car_plate_cache[car_id]['age'] = car_plate_cache[car_id].get('age', 0) + 1
-                    if car_plate_cache[car_id]['age'] > car_plate_cache_ttl:
-                        car_plate_cache.pop(car_id, None)
                 if debug_tracks:
                     for det_ref in vehicle_payload_refs:
                         car_id = det_ref.get('track_id', -1)
@@ -1241,7 +1482,11 @@ def process_video(path, args):
                 continue
             reconnect_count += 1
             consecutive_fails = 0
-            print(f'[reader] capture stalled, reconnect attempt #{reconnect_count}')
+            _throttled_log(
+                'reader.reconnect_attempt',
+                f'[reader] capture stalled, reconnect attempt #{reconnect_count}',
+                window_seconds=15.0,
+            )
             write_heartbeat(
                 status='reader_reconnect',
                 force=True,
@@ -1252,11 +1497,12 @@ def process_video(path, args):
             except Exception:
                 pass
             time.sleep(reader_reconnect_delay)
-            cap = create_video_reader(path, args)
+            cap, decode_meta = create_video_reader(path, args)
             if cap and hasattr(cap, 'isOpened') and cap.isOpened():
+                _log_decode_open_result('重连', decode_meta, True)
                 write_heartbeat(status='running', force=True)
                 continue
-            print('[reader] reconnect failed.')
+            _log_decode_open_result('重连', decode_meta, False)
             if reader_max_reconnect and reconnect_count >= reader_max_reconnect:
                 print('[reader] max reconnect attempts reached, aborting stream.')
                 break
