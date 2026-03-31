@@ -133,13 +133,7 @@
     "min_zone_b_dwell_frames_for_type4": 60,
     "enable_per_id_video": true,
     "per_id_video_dir": "video_result/per_id",
-    "per_id_downscale_ratio": 1,
-    "per_id_frame_stride": 2,
     "plate_infer_stride": 2,
-    "per_id_auto_adapt": false,
-    "per_id_auto_cpu_high": 75,
-    "per_id_auto_cpu_low": 50,
-    "per_id_max_frame_stride": 3,
     "enable_event_disk": false
   },
   "storage": {

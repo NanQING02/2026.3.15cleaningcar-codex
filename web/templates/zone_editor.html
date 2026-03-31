@@ -299,12 +299,6 @@
           <label>车辆中心门控比例 (0-1, 0关闭)
             <input type="number" min="0" max="1" step="0.01" v-model.number="form.logic.vehicle_center_gate_ratio" />
           </label>
-          <label>按车辆ID录像降分辨率比例 (0.1-1.0)
-            <input type="number" min="0.1" max="1" step="0.05" v-model.number="form.logic.per_id_downscale_ratio" />
-          </label>
-          <label>按车辆ID录像帧间隔 (每 N 帧写一帧)
-            <input type="number" min="1" v-model.number="form.logic.per_id_frame_stride" />
-          </label>
           <label>Type1 最小 Zone A 停留帧数 (0关闭)
             <input type="number" min="0" v-model.number="form.logic.min_track_frames_for_type1" />
           </label>
@@ -520,12 +514,6 @@
               wash_duration_offset_seconds: 0.0,
               min_zone_b_dwell_frames_for_type4: 60,
               per_id_video_dir: './video_result/per_id',
-              per_id_downscale_ratio: 1.0,
-              per_id_frame_stride: 1,
-              per_id_auto_adapt: false,
-              per_id_auto_cpu_high: 75,
-              per_id_auto_cpu_low: 50,
-              per_id_max_frame_stride: 3,
               enable_event_disk: false
             },
             storage: {
@@ -836,12 +824,6 @@
           this.form.logic.allowed_event_types = Array.isArray(this.form.logic.allowed_event_types) ? this.form.logic.allowed_event_types : [1, 2, 3, 4, 5, 6];
           this.form.logic.wash_duration_offset_seconds = Number(this.form.logic.wash_duration_offset_seconds || 0);
           this.form.logic.min_zone_b_dwell_frames_for_type4 = Number(this.form.logic.min_zone_b_dwell_frames_for_type4 || 60);
-          this.form.logic.per_id_downscale_ratio = Number(this.form.logic.per_id_downscale_ratio || 1.0);
-          this.form.logic.per_id_frame_stride = Number(this.form.logic.per_id_frame_stride || 1);
-          this.form.logic.per_id_auto_adapt = !!this.form.logic.per_id_auto_adapt;
-          this.form.logic.per_id_auto_cpu_high = Number(this.form.logic.per_id_auto_cpu_high || 75);
-          this.form.logic.per_id_auto_cpu_low = Number(this.form.logic.per_id_auto_cpu_low || 50);
-          this.form.logic.per_id_max_frame_stride = Number(this.form.logic.per_id_max_frame_stride || 3);
           this.form.logic.enable_event_disk = !!this.form.logic.enable_event_disk;
           this.form.storage.disk_threshold = Number(this.form.storage.disk_threshold || 65);
           this.form.storage.disk_target = Number(this.form.storage.disk_target || 50);
@@ -969,12 +951,6 @@
               debug_water_boxes: this.form.logic.debug_water_boxes,
               wash_duration_offset_seconds: this.form.logic.wash_duration_offset_seconds,
               min_zone_b_dwell_frames_for_type4: this.form.logic.min_zone_b_dwell_frames_for_type4,
-              per_id_downscale_ratio: this.form.logic.per_id_downscale_ratio,
-              per_id_frame_stride: this.form.logic.per_id_frame_stride,
-              per_id_auto_adapt: this.form.logic.per_id_auto_adapt,
-              per_id_auto_cpu_high: this.form.logic.per_id_auto_cpu_high,
-              per_id_auto_cpu_low: this.form.logic.per_id_auto_cpu_low,
-              per_id_max_frame_stride: this.form.logic.per_id_max_frame_stride,
               enable_event_disk: this.form.logic.enable_event_disk
             },
             storage: {

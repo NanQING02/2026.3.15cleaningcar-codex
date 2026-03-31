@@ -58,6 +58,10 @@ def _align_up(value, align):
     return ((int(value) + int(align) - 1) // int(align)) * int(align)
 
 
+def _align_bgr888_stride(width):
+    return _align_up(width, 16)
+
+
 def _iter_librga_candidates():
     env_so = os.environ.get("CLEANINGCAR_RGA_SO", "").strip()
     if env_so:
@@ -201,8 +205,8 @@ def rga_resize(im, new_unpad):
     if im.dtype != np.uint8 or im.ndim != 3 or im.shape[2] != 3:
         return cv2.resize(im, (tw, th), interpolation=cv2.INTER_LINEAR)
 
-    src_wstride = _align_up(w, 4)
-    dst_wstride = _align_up(tw, 4)
+    src_wstride = _align_bgr888_stride(w)
+    dst_wstride = _align_bgr888_stride(tw)
     src = np.ascontiguousarray(im)
 
     if src_wstride != w:

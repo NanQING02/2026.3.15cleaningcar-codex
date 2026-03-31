@@ -61,6 +61,26 @@ def _normalize_track_id(value):
     return track_id if track_id > 0 else None
 
 
+def _should_drop_stale_frames(source_mode):
+    return str(source_mode or '').strip().lower() != 'file'
+
+
+def _resolve_per_id_recording_params(width, height, source_fps, logic_cfg=None):
+    del logic_cfg
+    try:
+        resolved_fps = float(source_fps or 0.0)
+    except (TypeError, ValueError):
+        resolved_fps = 0.0
+    if resolved_fps <= 0.0:
+        resolved_fps = 20.0
+    return {
+        'width': max(1, int(width)),
+        'height': max(1, int(height)),
+        'fps': resolved_fps,
+        'frame_stride': 1,
+    }
+
+
 def _ensure_plate_binding_state(frame_idx, state=None):
     state = state if isinstance(state, dict) else {}
     state.setdefault('locked_car_id', None)
@@ -298,6 +318,7 @@ def process_video(path, args):
     else:
         source_mode = 'camera'
     print(f'[reader] source_mode={source_mode}')
+    drop_stale_frames = _should_drop_stale_frames(source_mode)
     consecutive_fails = 0
     reconnect_count = 0
     log_throttle = WindowedLogThrottle()
@@ -476,26 +497,25 @@ def process_video(path, args):
     enable_per_id_video = bool(logic_cfg.get('enable_per_id_video', False))
     per_id_video_dir = None
     per_id_writers = {}
-    per_id_downscale_ratio = float(logic_cfg.get('per_id_downscale_ratio', 1.0) or 1.0)
-    if per_id_downscale_ratio <= 0.0:
-        per_id_downscale_ratio = 1.0
-    per_id_target_width = width
-    per_id_target_height = height
-    if per_id_downscale_ratio < 0.999:
-        per_id_target_width = max(1, int(width * per_id_downscale_ratio))
-        per_id_target_height = max(1, int(height * per_id_downscale_ratio))
-    target_w = int(logic_cfg.get('per_id_target_width', 0) or 0)
-    target_h = int(logic_cfg.get('per_id_target_height', 0) or 0)
-    if target_w > 0 and target_h > 0:
-        per_id_target_width = target_w
-        per_id_target_height = target_h
-    per_id_output_fps = float(logic_cfg.get('per_id_fps', 20.0) or 20.0)
-    per_id_frame_stride = int(logic_cfg.get('per_id_frame_stride', 1) or 1)
-    if per_id_frame_stride < 1:
-        per_id_frame_stride = 1
-    resize_backend_label = resize_backend_name()
+    per_id_params = _resolve_per_id_recording_params(width, height, fps, logic_cfg=logic_cfg)
+    per_id_target_width = per_id_params['width']
+    per_id_target_height = per_id_params['height']
+    per_id_output_fps = per_id_params['fps']
+    per_id_record_stride = per_id_params['frame_stride']
+    resize_backend_label = (
+        'passthrough'
+        if per_id_target_width == width and per_id_target_height == height
+        else resize_backend_name()
+    )
 
     def resize_per_id_frame(frame_to_write):
+        if frame_to_write is None:
+            return None
+        if (
+            frame_to_write.shape[1] == per_id_target_width
+            and frame_to_write.shape[0] == per_id_target_height
+        ):
+            return frame_to_write
         return resize_bgr(frame_to_write, (per_id_target_width, per_id_target_height))
 
     def probe_writable_directory(directory: Path):
@@ -623,7 +643,7 @@ def process_video(path, args):
         else:
             print(
                 f'[per-id-video] target_size={per_id_target_width}x{per_id_target_height} '
-                f'fps={per_id_output_fps:.2f} stride={per_id_frame_stride} resize_backend={resize_backend_label}'
+                f'fps={per_id_output_fps:.2f} stride={per_id_record_stride} resize_backend={resize_backend_label}'
             )
 
     def collect_per_id_cleanup_roots():
@@ -1419,8 +1439,7 @@ def process_video(path, args):
                             frame_to_write = frame_out
                             if frame_to_write is not None:
                                 frame_to_write = resize_per_id_frame(frame_to_write)
-                                if next_frame_to_write % per_id_frame_stride == 0:
-                                    writer.write(frame_to_write)
+                                writer.write(frame_to_write)
                 if raw_frame_for_idx is not None:
                     latest_raw_frame = raw_frame_for_idx
                 elif frame_out is not None and latest_raw_frame is None:
@@ -1507,10 +1526,14 @@ def process_video(path, args):
                 task_q.put_nowait((frame_idx, frame, capture_ts))
                 break
             except Full:
-                dropped = _drop_stale_task_for_realtime()
-                if not dropped:
-                    drain_results(block=False)
-                    time.sleep(0.001)
+                dropped = False
+                if drop_stale_frames:
+                    dropped = _drop_stale_task_for_realtime()
+                    if not dropped:
+                        drain_results(block=False)
+                        time.sleep(0.001)
+                else:
+                    drain_results(block=True)
                 _advance_dropped_frames()
                 poll_runtime_commands(force=True)
                 write_heartbeat(

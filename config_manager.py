@@ -86,6 +86,17 @@ class ConfigManager:
 
         logic = self.data.setdefault('logic', {})
         logic.pop('enable_global_video', None)
+        for obsolete_key in (
+            'per_id_downscale_ratio',
+            'per_id_frame_stride',
+            'per_id_target_width',
+            'per_id_target_height',
+            'per_id_auto_adapt',
+            'per_id_auto_cpu_high',
+            'per_id_auto_cpu_low',
+            'per_id_max_frame_stride',
+        ):
+            logic.pop(obsolete_key, None)
         logic.setdefault('detection_anchor', 'bottom_center')
         logic.setdefault('zone_a_mask_enable', True)
         logic.setdefault('zone_b_entry_hysteresis', 3)
@@ -126,12 +137,6 @@ class ConfigManager:
         logic.setdefault('per_id_video_dir', DEFAULT_PER_ID_VIDEO_DIR)
         per_id_video_dir = str(logic.get('per_id_video_dir', '') or '').strip()
         logic['per_id_video_dir'] = per_id_video_dir or DEFAULT_PER_ID_VIDEO_DIR
-        logic.setdefault('per_id_downscale_ratio', 1.0)
-        logic.setdefault('per_id_frame_stride', 1)
-        logic.setdefault('per_id_auto_adapt', False)
-        logic.setdefault('per_id_auto_cpu_high', 75.0)
-        logic.setdefault('per_id_auto_cpu_low', 50.0)
-        logic.setdefault('per_id_max_frame_stride', 3)
         logic.setdefault('enable_event_disk', False)
         shadow = logic.setdefault('shadow_plate_pool', {})
         shadow.setdefault('max_candidates', 50)
