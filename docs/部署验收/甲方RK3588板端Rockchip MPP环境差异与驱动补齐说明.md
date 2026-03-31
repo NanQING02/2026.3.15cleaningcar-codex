@@ -14,19 +14,26 @@
 
 文档时间基准：`2026-03-26`
 
+> 阅读前说明（更新于 2026-03-31）
+>
+> - 当前代码解码顺序是：`FFmpeg 硬解 -> GStreamer+mpp 硬解 -> 软件解码`。
+> - 当前 per-id 单车视频编码顺序是：`FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264`。
+> - 因此，本文中的 Rockchip GStreamer MPP 插件，应理解为“第二备选硬解链路所需能力”，不是当前唯一硬解入口。
+
 ## 1. 结论摘要
 
 根据两台设备的实际输出，可以确认：
 
-- 实验室设备已正常安装并加载 Rockchip GStreamer MPP 插件
+- 实验室设备已正常安装并加载 Rockchip GStreamer MPP 插件，至少可证明备用 `GStreamer+mpp` 链路可用
 - 甲方设备虽然已安装 `librockchip-mpp1`、`librockchip-mpp-dev`、`librockchip-vpu0` 等运行库
 - 甲方设备的 OpenCV 也已确认支持 `GStreamer`
 - 但甲方设备 **未安装或未提供 Rockchip GStreamer MPP 插件库**
+- 同批排查里 `ffmpeg -hide_banner -decoders | grep rkmpp` 与 `ffmpeg -hide_banner -encoders | grep rkmpp` 也未搜到可用项
 - 因而 `gst-inspect-1.0 mppvideodec` 失败，`gst-launch-1.0 ... ! mppvideodec ! ...` 也无法执行
 
 因此，当前阻塞点不是 Python 项目，也不是 OpenCV 是否开启了 GStreamer，而是：
 
-**甲方 RK3588 板端缺少项目硬解所必需的 Rockchip GStreamer MPP 插件层。**
+**甲方 RK3588 板端同时缺少当前项目 `FFmpeg` 优先硬解/硬编所需的 `rkmpp` 能力，以及第二备选 `GStreamer+mpp` 所需的 Rockchip GStreamer MPP 插件层。**
 
 ## 2. 两台设备的关键差异对照
 
@@ -38,7 +45,7 @@
 | 插件能力 | `Rockchip's MPP video decoder` | 无法识别 | 甲方未具备同等能力 |
 | OpenCV 的 GStreamer 支持 | 本轮输出未重复采集 | `YES (1.16.2)` | 甲方该项已满足，不是当前问题 |
 | `librockchip_mpp.so` 运行库 | 实验室输出未列出，但插件已实际可用 | 已存在 | 甲方并非完全没有 MPP，只是缺插件层 |
-| `ffmpeg rkmpp` | 本轮实验室输出未体现 | 未搜到 | 非当前最小阻塞，但建议补齐 |
+| `ffmpeg rkmpp` | 本轮实验室输出未体现 | 未搜到 | 甲方缺当前优先链路能力 |
 
 ## 3. 实验室设备的有效证据
 
@@ -75,7 +82,7 @@ Plugin Details:
 
 ## 4. 甲方设备的有效证据
 
-甲方设备输出能够完整证明：当前板端只具备部分运行库，不具备项目所需的 GStreamer MPP 插件层。
+甲方设备输出能够完整证明：当前板端只具备部分运行库，不具备项目所需的 GStreamer MPP 插件层；结合 `ffmpeg rkmpp` 缺失，可判断当前板端硬件加速链路并不完整。
 
 ### 4.1 OpenCV 已开启 GStreamer
 
@@ -234,7 +241,7 @@ ffmpeg -hide_banner -encoders | grep rkmpp
 
 输出为空。
 
-这一项不构成当前 `mppvideodec` 缺失的直接原因，但反映出板端整体多媒体硬件加速环境并不完整，建议板商后续一并补齐。
+这说明当前项目的 `FFmpeg` 优先硬解/硬编链路也无法命中，不只是 `GStreamer+mpp` 备用链路缺失。
 
 ### 4.7 最小硬解管线直接失败
 
@@ -255,17 +262,18 @@ WARNING: erroneous pipeline: no element "mppvideodec"
 
 结论：
 
-- 当前板端无法执行项目所需的最小 `GStreamer+mpp` 硬解链路
+- 当前板端无法执行项目第二备选 `GStreamer+mpp` 硬解链路
 - 故障在 GStreamer 元素解析阶段已经发生，早于项目代码逻辑
 
 ## 5. 归因结论
 
 综合两台设备输出，可将问题归因为：
 
-1. 实验室设备存在 `libgstrockchipmpp.so`，因此 `mppvideodec` 可被 GStreamer 正常识别。
+1. 实验室设备存在 `libgstrockchipmpp.so`，因此 `mppvideodec` 可被 GStreamer 正常识别，至少可证明备用 `GStreamer+mpp` 链路可用。
 2. 甲方设备仅安装了 `librockchip-mpp1` 等底层运行库，但未提供 Rockchip GStreamer MPP 插件文件。
-3. 所以甲方设备虽然“有 MPP 库”，但没有“项目实际可调用的 GStreamer MPP 解码元素”。
-4. 这属于板端 BSP/多媒体环境交付不完整，不属于 Python 项目改代码能解决的问题。
+3. 甲方设备的 `ffmpeg` 也未提供 `rkmpp` 编解码能力，因此当前代码无法命中 `FFmpeg` 优先硬解/硬编链路。
+4. 所以甲方设备虽然“有 MPP 库”，但没有“项目当前真正可调用的硬件加速编解码能力”。
+5. 这属于板端 BSP/多媒体环境交付不完整，不属于 Python 项目改代码能解决的问题。
 
 ## 6. 对板商/BSP 供应方的正式补齐要求
 
@@ -278,16 +286,18 @@ WARNING: erroneous pipeline: no element "mppvideodec"
 - 当前 GStreamer `1.16.3`
 - 当前 `librockchip-mpp1 1.5.0-1`
 
-补齐与之匹配的 **Rockchip GStreamer MPP 插件层**。
+补齐与之匹配的 **`FFmpeg rkmpp` 能力** 和 **Rockchip GStreamer MPP 插件层**。
 
 至少应满足以下交付要求：
 
+- 提供支持 `rkmpp` 的 `ffmpeg`，至少要能识别 `h264_rkmpp`，最好同时覆盖常见 `rkmpp` 解码器
 - 提供可安装的 Rockchip GStreamer MPP 插件包，安装后可用 `mppvideodec`
 - 安装后在 GStreamer 插件目录下可见 `libgstrockchipmpp.so` 或功能等价插件文件
-- 提供插件依赖的库、配置和安装说明
+- 提供两套链路所需的依赖库、配置和安装说明
 - 提供明确的软件版本对应关系：
   - 系统版本
   - BSP 版本
+  - FFmpeg 版本
   - GStreamer 版本
   - MPP 版本
   - 插件包版本
@@ -309,15 +319,29 @@ WARNING: erroneous pipeline: no element "mppvideodec"
 
 以下不是当前主阻塞项，但建议同步处理：
 
-- `ffmpeg` 的 `rkmpp` 编解码支持
 - 对应版本的安装文档
 - 最小验收命令和预期结果说明
+- 若无法提供某项能力，请明确书面说明“不支持”和原因
 
-这样可以避免后续再次因“ffmpeg 能力缺失”产生新的环境问题。
+这样可以避免现场继续在“插件缺失”和“ffmpeg 能力缺失”之间反复排查。
 
 ## 8. 板商交付后的验收标准
 
-### 8.1 插件层验收
+### 8.1 FFmpeg 能力验收
+
+执行：
+
+```bash
+ffmpeg -hide_banner -decoders | grep rkmpp
+ffmpeg -hide_banner -encoders | grep -E "rkmpp|v4l2m2m|omx"
+```
+
+通过标准：
+
+- `ffmpeg -hide_banner -decoders` 能看到 `rkmpp` 相关解码器
+- `ffmpeg -hide_banner -encoders` 至少能看到一个项目可用的 H.264 编码器，优先 `h264_rkmpp`
+
+### 8.2 插件层验收
 
 执行：
 
@@ -333,7 +357,7 @@ find /usr/lib /usr/lib/aarch64-linux-gnu /usr/local/lib -path "*gstreamer-1.0*" 
 - 能看到 Rockchip MPP 插件信息
 - 能找到 `libgstrockchipmpp.so` 或同等作用插件文件
 
-### 8.2 最小本地文件硬解验收
+### 8.3 最小本地文件硬解验收
 
 执行：
 
@@ -350,7 +374,7 @@ gst-launch-1.0 -v \
 - 不再报 `no element "mppvideodec"`
 - 能正常跑完或持续输出 FPS
 
-### 8.3 项目内实际启用验收
+### 8.4 项目内实际启用验收
 
 启用：
 
@@ -360,10 +384,11 @@ gst-launch-1.0 -v \
 }
 ```
 
-项目日志应出现：
+项目日志应出现以下任一内容：
 
+- `[reader] Using FFmpeg hardware decoder ...`
 - `[reader] Using GStreamer+mpp file pipeline for ...`
-- 或 `[reader] Using GStreamer+mpp RTSP TCP pipeline for ...`
+- `[reader] Using GStreamer+mpp RTSP TCP pipeline for ...`
 
 若未出现，视为板端环境仍未真正满足项目所需硬解链路。
 
@@ -377,8 +402,8 @@ gst-launch-1.0 -v \
 }
 ```
 
-原因不是项目代码不支持，而是当前甲方板端的 Rockchip GStreamer MPP 插件层缺失。
+原因不是项目代码不支持，而是当前甲方板端同时缺少 `FFmpeg rkmpp` 与 Rockchip GStreamer MPP 插件层。
 
 ## 10. 可直接发送给板商的简版说明
 
-> 2026-03-26 现场对比结果显示：实验室设备执行 `gst-inspect-1.0 mppvideodec` 可正常识别 `rockchipmpp` 插件，插件文件为 `/usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstrockchipmpp.so`；甲方 RK3588 设备虽然已安装 `librockchip-mpp1`、`librockchip-mpp-dev`、`librockchip-vpu0`，且 OpenCV 已支持 GStreamer，但 `gst-inspect-1.0 mppvideodec` 返回 `No such element or plugin 'mppvideodec'`，GStreamer 插件目录下也未找到 Rockchip MPP 插件文件，最小硬解命令 `gst-launch-1.0 ... ! mppvideodec ! ...` 直接失败。请提供与当前 `Ubuntu 20.04.6 + Linux 5.10.226 + GStreamer 1.16.3 + RK3588 BSP` 匹配的 Rockchip GStreamer MPP 插件包或完整多媒体环境，至少补齐 `mppvideodec` 及其依赖，并确保现场命令能够通过验收。
+> 2026-03-26 现场对比结果显示：甲方 RK3588 设备虽然已安装 `librockchip-mpp1`、`librockchip-mpp-dev`、`librockchip-vpu0`，且 OpenCV 已支持 GStreamer，但 `gst-inspect-1.0 mppvideodec` 返回 `No such element or plugin 'mppvideodec'`，GStreamer 插件目录下也未找到 Rockchip MPP 插件文件，最小硬解命令 `gst-launch-1.0 ... ! mppvideodec ! ...` 直接失败；同时 `ffmpeg -hide_banner -decoders | grep rkmpp` 与 `ffmpeg -hide_banner -encoders | grep rkmpp` 也未搜到可用项。请提供与当前 `Ubuntu 20.04.6 + Linux 5.10.226 + GStreamer 1.16.3 + RK3588 BSP` 匹配的 `FFmpeg rkmpp` 能力和 Rockchip GStreamer MPP 插件包或完整多媒体环境，至少补齐 `h264_rkmpp` / `mppvideodec` 及其依赖，并确保现场命令能够通过验收。

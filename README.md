@@ -1,4 +1,4 @@
-﻿# CleaningCar RKNN 项目说明
+# CleaningCar RKNN 项目说明
 
 当前仓库已经收敛为可直接部署到 RKNN 板端的运行项目，主链路包含：
 
@@ -63,8 +63,11 @@
 
 - 当前只保留双模型车牌链路，旧单模型 LPR 不再参与主链路
 - `video.fp_output_mode` 支持 `6` 和 `9` 两种后处理模式，默认 `6`
+- 当 `video.hw_decode=true` 时，读流顺序为：`FFmpeg 硬解 -> GStreamer+mpp 硬解 -> 软件解码`
+- 单车视频写出顺序为：`FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264`
 - 本地文件视频默认只跑一遍，读到 EOF 后退出；只有手动勾选自动重启才会循环
 - `logic.per_id_video_dir` 留空、空白或不可写时，统一回退到 `video_result/per_id/`
+- 全局视频保存功能已彻底删除，当前只保留 `logic.enable_per_id_video`
 - 截图与单车视频已经接入按天数 + 按数量的周期清理
 
 ## 当前默认配置快照
@@ -84,6 +87,7 @@
 说明：
 
 - 上述只是当前仓库默认值，运行时仍以实际配置文件和 Web 保存结果为准
+- 若板端缺少 `ffmpeg rkmpp`，程序会先退到 `GStreamer+mpp`；若 `mppvideodec` 也不可用，再退到软件解码
 - 涉及性能、正确性和旁路开销时，优先同时对照 `configs/config.json` 与 `cleaningcar/pipeline.py`
 
 ## 主链路速览
@@ -221,3 +225,4 @@ python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 - `docs/总览说明/` 是当前项目总览的主入口
 - `docs/部署验收/` 里同时包含“当前仍有效”的部署文档和“带时间/环境前提”的专项文档
 - 遇到 `甲方设备MPP环境说明.md`、`甲方RK3588板端*.md`、`部署前性能评估与低风险优化建议.md` 这类文档时，要先看文首说明，再判断是不是当前场景
+

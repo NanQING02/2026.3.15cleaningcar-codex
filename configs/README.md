@@ -23,6 +23,12 @@
 - `video.source_mode`：建议优先用 `auto`
 - 当输入被识别为本地文件时，会按文件源处理，默认跑完一遍后退出
 
+### `video.hw_decode`
+
+- `true` 时，读流按 `FFmpeg 硬解 -> GStreamer+mpp 硬解 -> 软件解码` 依次尝试
+- 板端若缺少 `ffmpeg rkmpp`，程序会自动退到 `mppvideodec`
+- 若两级硬解都不可用，才会退到软件解码
+
 ### `video.fp_output_mode`
 
 FP 检测模型后处理模式：
@@ -37,6 +43,12 @@ FP 检测模型后处理模式：
 
 - 单车视频输出目录
 - 留空、只填空白、或目录不可写时，会自动回退到 `video_result/per_id/`
+
+### `logic.enable_per_id_video`
+
+- 当前只保留单车视频留存开关 `logic.enable_per_id_video`
+- 单车视频写出顺序为 `FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264`
+- 旧的全局视频保存字段 `video.save_video`、`logic.enable_global_video` 已彻底删除，不再生效
 
 ### `system.startup_capture_dir` / `system.manual_capture_dir`
 

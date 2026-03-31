@@ -15,7 +15,8 @@
 - `video_io.py`
   - 打开视频源
   - 管理 RTSP / 文件输入
-  - 负责 FFmpeg H.264 输出和运行时路径解析
+  - 负责 `FFmpeg 硬解 -> GStreamer+mpp 硬解 -> 软件解码` 与 `FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264` 的统一回退
+  - 负责运行时路径解析
 
 - `vision.py`
   - 提供 IoU、点位缩放、anchor 计算等几何工具
@@ -67,6 +68,7 @@
 - `pipeline.py`
   - 主流程总调度层
   - 负责把读流、worker、跟踪、事件、截图、命令处理、单车视频和清理策略串起来
+  - 当前只保留 per-id 单车视频，不再维护全局视频保存链路
 
 - `cli.py`
   - 命令行入口
@@ -127,6 +129,8 @@ flowchart TD
 - 中文显示新增 `text_render.py`
 - 事件截图真实落盘校验收到了 `events.py`
 - 运行期清理独立到了 `storage_cleanup.py`
+- 视频链路已收口为 FFmpeg 硬解/硬编优先，GStreamer 硬件链路次选，软件链路兜底
+- 全局视频保存残留已删除，仅保留 `logic.enable_per_id_video`
 - 当前主链路只保留双模型车牌流程，旧单模型 LPR 仅保留在 `future_modules/legacy_lpr/`
 
 ## 建议阅读顺序

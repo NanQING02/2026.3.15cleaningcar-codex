@@ -41,6 +41,8 @@
 ## 阅读提醒
 
 - 当前代码、默认配置和主链路说明，以根目录 `README.md`、`configs/README.md`、`cleaningcar/README.md` 以及实际代码为准
+- 当前视频链路口径是：`FFmpeg 硬解/硬编优先 -> GStreamer+mpp / GStreamer 硬件链路次选 -> 软件链路兜底`
+- 当前已删除全局视频保存功能，仅保留 `logic.enable_per_id_video`
 - `docs/部署验收/甲方设备MPP环境说明.md`
   - 这是特定甲方板端环境的专项文档
 - `docs/部署验收/甲方RK3588板端Rockchip MPP环境差异与驱动补齐说明.md`
