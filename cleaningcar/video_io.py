@@ -1,14 +1,26 @@
 import os
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import cv2
 
-from .constants import FFMPEG_PIX_BYTES
+FFMPEG_HW_ENCODERS = ('h264_rkmpp', 'h264_v4l2m2m', 'h264_omx')
+FFMPEG_SW_ENCODERS = ('libx264',)
+GSTREAMER_HW_ENCODERS = ('mpph264enc', 'v4l2h264enc', 'omxh264enc')
+FFMPEG_HW_DECODER_CANDIDATES = (
+    'h264_rkmpp',
+    'hevc_rkmpp',
+    'mjpeg_rkmpp',
+    'mpeg2_rkmpp',
+    'vp8_rkmpp',
+    'vp9_rkmpp',
+)
+
 
 class FfmpegH264Writer:
-    def __init__(self, path, width, height, fps):
+    def __init__(self, path, width, height, fps, encoders=None):
         self.path = str(path)
         p = Path(self.path)
         if p.suffix:
@@ -22,6 +34,8 @@ class FfmpegH264Writer:
         self.proc = None
         self.stdin = None
         self.encoder = None
+        self.backend = 'ffmpeg'
+        self._encoders = tuple(encoders or (FFMPEG_HW_ENCODERS + FFMPEG_SW_ENCODERS))
         self._opened = False
         self._frames_total = 0
         self._frames_since_log = 0
@@ -76,6 +90,10 @@ class FfmpegH264Writer:
         return base + opts + tail
 
     def _try_start(self, encoder):
+        self.proc = None
+        self.stdin = None
+        self.encoder = None
+        self._opened = False
         cmd = self._build_cmd(encoder)
         try:
             self.proc = subprocess.Popen(
@@ -106,8 +124,7 @@ class FfmpegH264Writer:
             return False
 
     def _start(self):
-        # Prefer hardware encoders first to reduce CPU usage; fallback to libx264.
-        for enc in ('h264_rkmpp', 'h264_v4l2m2m', 'h264_omx', 'libx264'):
+        for enc in self._encoders:
             if self._try_start(enc):
                 return
         print(f'[per-id-video] no available H.264 encoder for {self.path}')
@@ -172,6 +189,171 @@ class FfmpegH264Writer:
                 print(f'[per-id-video] rename failed {self._output_path} -> {self.path}: {exc}')
         return finalized
 
+
+class GstreamerH264Writer:
+    def __init__(self, path, width, height, fps, encoders=None):
+        self.path = str(path)
+        p = Path(self.path)
+        if p.suffix:
+            temp_name = p.stem + '_temp' + p.suffix
+        else:
+            temp_name = p.name + '_temp'
+        self._output_path = str(p.with_name(temp_name))
+        self.width = int(width)
+        self.height = int(height)
+        self.fps = float(fps)
+        self.encoder = None
+        self.backend = 'gstreamer'
+        self._encoders = tuple(encoders or GSTREAMER_HW_ENCODERS)
+        self._writer = None
+        self._opened = False
+        self._frames_total = 0
+        self._frames_since_log = 0
+        self._start_time = time.time()
+        self._last_log_time = self._start_time
+        self._log_interval = 10.0
+        self._start()
+
+    def _build_pipeline(self, encoder):
+        out_path = self._output_path.replace('\\', '/').replace('"', '\\"')
+        return (
+            'appsrc '
+            f'caps=video/x-raw,format=BGR,width={self.width},height={self.height},framerate={max(int(round(self.fps)), 1)}/1 '
+            '! videoconvert '
+            f'! {encoder} '
+            '! h264parse ! qtmux faststart=true '
+            f'! filesink location="{out_path}" sync=false'
+        )
+
+    def _try_start(self, encoder):
+        self._writer = None
+        self.encoder = None
+        self._opened = False
+        pipeline = self._build_pipeline(encoder)
+        try:
+            writer = cv2.VideoWriter(
+                pipeline,
+                cv2.CAP_GSTREAMER,
+                0,
+                self.fps,
+                (self.width, self.height),
+                True,
+            )
+            if not writer.isOpened():
+                writer.release()
+                print(f'[per-id-video] gstreamer encoder {encoder} not available for {self.path}, falling back')
+                return False
+            self._writer = writer
+            self.encoder = encoder
+            self._opened = True
+            print(f'[per-id-video] using gstreamer encoder={encoder} path={self.path}')
+            return True
+        except Exception as exc:
+            self._writer = None
+            self.encoder = None
+            self._opened = False
+            print(f'[per-id-video] failed to start gstreamer encoder {encoder} for {self.path}: {exc}')
+            return False
+
+    def _start(self):
+        for enc in self._encoders:
+            if self._try_start(enc):
+                return
+        print(f'[per-id-video] no available GStreamer H.264 encoder for {self.path}')
+
+    def is_opened(self):
+        return bool(self._opened and self._writer is not None and self._writer.isOpened())
+
+    def write(self, frame):
+        if not self.is_opened() or frame is None:
+            return
+        try:
+            self._writer.write(frame)
+            self._frames_total += 1
+            self._frames_since_log += 1
+            now = time.time()
+            if self._log_interval > 0 and now - self._last_log_time >= self._log_interval:
+                elapsed = now - self._last_log_time
+                fps = self._frames_since_log / max(elapsed, 1e-6)
+                print(f'[per-id-video] encoder={self.encoder} fps={fps:.2f} window={elapsed:.1f}s total_frames={self._frames_total} path={self.path}')
+                self._frames_since_log = 0
+                self._last_log_time = now
+        except Exception as exc:
+            print(f'[per-id-video] write failed for {self.path}: {exc}')
+            self.release()
+
+    def release(self):
+        finalized = False
+        if self._writer is not None:
+            try:
+                self._writer.release()
+            except Exception:
+                pass
+            self._writer = None
+        self._opened = False
+        if getattr(self, '_output_path', None) and self.path:
+            try:
+                if os.path.exists(self._output_path):
+                    os.replace(self._output_path, self.path)
+                    print(f'[per-id-video] finalized video: {self.path}')
+                    finalized = True
+            except Exception as exc:
+                print(f'[per-id-video] rename failed {self._output_path} -> {self.path}: {exc}')
+        return finalized
+
+
+def _safe_release_writer(writer):
+    if writer is None or not hasattr(writer, 'release'):
+        return
+    try:
+        writer.release()
+    except Exception:
+        pass
+
+
+def create_h264_video_writer(path, width, height, fps):
+    attempt_order = []
+    meta = {
+        'writer_mode': 'sw',
+        'writer_backend': 'none',
+        'fallback_used': False,
+        'fallback_reason': '',
+        'attempt_order': attempt_order,
+    }
+
+    attempt_order.append('ffmpeg_hw')
+    writer = FfmpegH264Writer(path, width, height, fps, encoders=FFMPEG_HW_ENCODERS)
+    if writer.is_opened():
+        meta['writer_mode'] = 'hw'
+        meta['writer_backend'] = 'ffmpeg'
+        return writer, meta
+    _safe_release_writer(writer)
+
+    attempt_order.append('gstreamer_hw')
+    writer = GstreamerH264Writer(path, width, height, fps, encoders=GSTREAMER_HW_ENCODERS)
+    if writer.is_opened():
+        meta['writer_mode'] = 'hw'
+        meta['writer_backend'] = 'gstreamer'
+        meta['fallback_used'] = True
+        meta['fallback_reason'] = 'ffmpeg_hw_open_failed'
+        return writer, meta
+    _safe_release_writer(writer)
+
+    attempt_order.append('ffmpeg_sw')
+    writer = FfmpegH264Writer(path, width, height, fps, encoders=FFMPEG_SW_ENCODERS)
+    if writer.is_opened():
+        meta['writer_mode'] = 'sw'
+        meta['writer_backend'] = 'ffmpeg'
+        meta['fallback_used'] = True
+        meta['fallback_reason'] = 'hw_writer_open_failed'
+        return writer, meta
+    _safe_release_writer(writer)
+
+    meta['writer_backend'] = 'ffmpeg'
+    meta['fallback_used'] = True
+    meta['fallback_reason'] = 'all_writer_open_failed'
+    return None, meta
+
 def parse_core_mask(text: str):
     if text is None:
         return None
@@ -204,36 +386,111 @@ def parse_core_mask(text: str):
     return bits or None
 
 
-def open_video_capture(src, hw_decode=False, rtsp_latency_ms=200, rtsp_appsink_max_buffers=1):
-    if hw_decode and isinstance(src, str):
-        pipelines = []
-        if src.startswith(('rtsp://', 'rtsps://')):
-            rtsp_latency_ms = max(0, int(rtsp_latency_ms))
-            rtsp_appsink_max_buffers = max(1, int(rtsp_appsink_max_buffers))
-            pipelines.append((
-                f"rtspsrc location=\"{src}\" latency={rtsp_latency_ms} protocols=tcp ! "
-                "rtph264depay ! h264parse ! mppvideodec ! videoconvert ! "
-                f"video/x-raw,format=BGR ! appsink sync=false drop=true max-buffers={rtsp_appsink_max_buffers}",
-                '[reader] Using GStreamer+mpp RTSP TCP pipeline for {src}',
-            ))
-        elif not src.startswith(('http://', 'https://')):
-            pipelines.append((
-                f"filesrc location=\"{src}\" ! qtdemux ! h264parse ! mppvideodec ! "
-                "videoconvert ! video/x-raw,format=BGR ! appsink",
-                '[reader] Using GStreamer+mpp file pipeline for {src}',
-            ))
-        for pipeline, msg in pipelines:
-            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-            if cap.isOpened():
-                print(msg.format(src=src))
-                return cap
-        print(f'[reader] hardware decode pipeline open failed, source={src}')
+def _format_ffmpeg_capture_options(options):
+    chunks = []
+    for key, value in options:
+        if value in (None, ''):
+            continue
+        chunks.append(f'{key};{value}')
+    return '|'.join(chunks)
+
+
+def _merge_ffmpeg_capture_options(extra):
+    current = str(os.environ.get('OPENCV_FFMPEG_CAPTURE_OPTIONS', '') or '').strip()
+    if current and extra:
+        return f'{current}|{extra}'
+    return extra or current
+
+
+@contextmanager
+def _temporary_env_var(name, value):
+    had_original = name in os.environ
+    original = os.environ.get(name)
+    if value:
+        os.environ[name] = value
+    else:
+        os.environ.pop(name, None)
+    try:
+        yield
+    finally:
+        if had_original:
+            os.environ[name] = original
+        else:
+            os.environ.pop(name, None)
+
+
+def _open_ffmpeg_capture(src, option_text=''):
+    merged_options = _merge_ffmpeg_capture_options(option_text)
+    with _temporary_env_var('OPENCV_FFMPEG_CAPTURE_OPTIONS', merged_options):
+        return cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+
+
+def _ordered_ffmpeg_hw_decoders(src):
+    if not isinstance(src, str):
+        return FFMPEG_HW_DECODER_CANDIDATES
+    lower = src.lower()
+    if '265' in lower or 'hevc' in lower:
+        return ('hevc_rkmpp',) + tuple(dec for dec in FFMPEG_HW_DECODER_CANDIDATES if dec != 'hevc_rkmpp')
+    return FFMPEG_HW_DECODER_CANDIDATES
+
+
+def _open_ffmpeg_hardware_capture(src, rtsp_latency_ms=200, rtsp_appsink_max_buffers=1):
+    if not isinstance(src, str):
         return None
+    base_options = []
+    if src.startswith(('rtsp://', 'rtsps://')):
+        base_options.append(('rtsp_transport', 'tcp'))
+    for decoder in _ordered_ffmpeg_hw_decoders(src):
+        option_text = _format_ffmpeg_capture_options(base_options + [
+            ('hw_decoders_any', 'rkmpp'),
+            ('video_codec', decoder),
+        ])
+        cap = _open_ffmpeg_capture(src, option_text=option_text)
+        if _is_capture_opened(cap):
+            try:
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+            print(f'[reader] Using FFmpeg hardware decoder {decoder} for {src}')
+            return cap
+        _safe_release_capture(cap)
+    print(f'[reader] ffmpeg hardware decode open failed, source={src}')
+    return None
+
+
+def _open_gstreamer_hardware_capture(src, rtsp_latency_ms=200, rtsp_appsink_max_buffers=1):
+    if not isinstance(src, str):
+        return None
+    pipelines = []
+    if src.startswith(('rtsp://', 'rtsps://')):
+        rtsp_latency_ms = max(0, int(rtsp_latency_ms))
+        rtsp_appsink_max_buffers = max(1, int(rtsp_appsink_max_buffers))
+        pipelines.append((
+            f'rtspsrc location="{src}" latency={rtsp_latency_ms} protocols=tcp ! '
+            'rtph264depay ! h264parse ! mppvideodec ! videoconvert ! '
+            f'video/x-raw,format=BGR ! appsink sync=false drop=true max-buffers={rtsp_appsink_max_buffers}',
+            '[reader] Using GStreamer+mpp RTSP TCP pipeline for {src}',
+        ))
+    elif not src.startswith(('http://', 'https://')):
+        pipelines.append((
+            f'filesrc location="{src}" ! qtdemux ! h264parse ! mppvideodec ! '
+            'videoconvert ! video/x-raw,format=BGR ! appsink',
+            '[reader] Using GStreamer+mpp file pipeline for {src}',
+        ))
+    for pipeline, msg in pipelines:
+        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        if _is_capture_opened(cap):
+            print(msg.format(src=src))
+            return cap
+        _safe_release_capture(cap)
+    print(f'[reader] gstreamer hardware decode open failed, source={src}')
+    return None
+
+
+def _open_software_capture(src, rtsp_latency_ms=200, rtsp_appsink_max_buffers=1):
     if isinstance(src, str) and src.startswith(('rtsp://', 'rtsps://')):
-        if 'OPENCV_FFMPEG_CAPTURE_OPTIONS' not in os.environ:
-            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
-        cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
-        if cap.isOpened():
+        cap = _open_ffmpeg_capture(src, option_text='rtsp_transport;tcp')
+        if _is_capture_opened(cap):
             try:
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             except Exception:
@@ -241,6 +498,32 @@ def open_video_capture(src, hw_decode=False, rtsp_latency_ms=200, rtsp_appsink_m
             print(f'[reader] Using OpenCV FFmpeg RTSP TCP capture for {src}')
         return cap
     return cv2.VideoCapture(src)
+
+
+def open_video_capture(src, hw_decode=False, rtsp_latency_ms=200, rtsp_appsink_max_buffers=1):
+    if hw_decode:
+        cap = _open_ffmpeg_hardware_capture(
+            src,
+            rtsp_latency_ms=rtsp_latency_ms,
+            rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
+        )
+        if _is_capture_opened(cap):
+            return cap
+        _safe_release_capture(cap)
+        cap = _open_gstreamer_hardware_capture(
+            src,
+            rtsp_latency_ms=rtsp_latency_ms,
+            rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
+        )
+        if _is_capture_opened(cap):
+            return cap
+        _safe_release_capture(cap)
+        return None
+    return _open_software_capture(
+        src,
+        rtsp_latency_ms=rtsp_latency_ms,
+        rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
+    )
 
 
 def _source_kind_for_decode(path):
@@ -295,36 +578,59 @@ def create_video_reader(path, args):
     rtsp_appsink_max_buffers = _safe_int(video_cfg.get('rtsp_appsink_max_buffers', 1), 1)
     decode_meta = {
         'decode_mode': 'sw',
+        'decode_backend': 'software',
         'fallback_used': False,
         'fallback_reason': '',
         'source_kind': _source_kind_for_decode(path),
+        'attempt_order': [],
     }
 
+    attempt_order = decode_meta['attempt_order']
     if hw:
-        cap_hw = open_video_capture(
+        attempt_order.append('ffmpeg_hw')
+        cap_hw = _open_ffmpeg_hardware_capture(
             path,
-            hw_decode=True,
             rtsp_latency_ms=rtsp_latency_ms,
             rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
         )
         if _is_capture_opened(cap_hw):
             decode_meta['decode_mode'] = 'hw'
+            decode_meta['decode_backend'] = 'ffmpeg'
             return cap_hw, decode_meta
         _safe_release_capture(cap_hw)
-        decode_meta['fallback_used'] = True
-        decode_meta['fallback_reason'] = 'hw_open_failed'
+        attempt_order.append('gstreamer_hw')
+        cap_hw = _open_gstreamer_hardware_capture(
+            path,
+            rtsp_latency_ms=rtsp_latency_ms,
+            rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
+        )
+        if _is_capture_opened(cap_hw):
+            decode_meta['decode_mode'] = 'hw'
+            decode_meta['decode_backend'] = 'gstreamer'
+            decode_meta['fallback_used'] = True
+            decode_meta['fallback_reason'] = 'ffmpeg_hw_open_failed'
+            return cap_hw, decode_meta
+        _safe_release_capture(cap_hw)
 
-    cap_sw = open_video_capture(
+    attempt_order.append('software')
+    cap_sw = _open_software_capture(
         path,
-        hw_decode=False,
         rtsp_latency_ms=rtsp_latency_ms,
         rtsp_appsink_max_buffers=rtsp_appsink_max_buffers,
     )
     if _is_capture_opened(cap_sw):
         decode_meta['decode_mode'] = 'sw'
+        decode_meta['decode_backend'] = 'software'
+        if hw:
+            decode_meta['fallback_used'] = True
+            decode_meta['fallback_reason'] = 'hw_open_failed'
         return cap_sw, decode_meta
     _safe_release_capture(cap_sw)
     decode_meta['decode_mode'] = 'sw'
+    decode_meta['decode_backend'] = 'software'
+    if hw:
+        decode_meta['fallback_used'] = True
+        decode_meta['fallback_reason'] = 'hw_open_failed'
     return None, decode_meta
 
 
@@ -408,7 +714,6 @@ def _collect_storage_directories(config, base_dir):
         directories.append(resolved.parent if treat_as_file else resolved)
 
     video_cfg = config.get('video', {}) or {}
-    push(video_cfg.get('save_video'), treat_as_file=True)
     base = base_dir if base_dir else Path.cwd()
     directories.append((base / 'video_result').resolve())
 

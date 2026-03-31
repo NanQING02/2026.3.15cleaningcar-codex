@@ -58,12 +58,12 @@ class ConfigManager:
         video = self.data.setdefault('video', {})
         if 'source' not in video:
             raise ConfigError('video.source missing')
+        video.pop('save_video', None)
         video.setdefault('source_mode', 'auto')
         video.setdefault('hw_decode', False)
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')
         video.setdefault('fp_output_mode', '6')
-        video.setdefault('save_video', '')
         video.setdefault('csv', '')
         video.setdefault('debug_frame_path', '/dev/shm/cleaningcar_debug.jpg')
         video.setdefault('debug_frame_interval', 30)
@@ -85,6 +85,7 @@ class ConfigManager:
         }
 
         logic = self.data.setdefault('logic', {})
+        logic.pop('enable_global_video', None)
         logic.setdefault('detection_anchor', 'bottom_center')
         logic.setdefault('zone_a_mask_enable', True)
         logic.setdefault('zone_b_entry_hysteresis', 3)
@@ -121,7 +122,6 @@ class ConfigManager:
         logic.setdefault('debug_water_boxes', False)
         logic.setdefault('wash_duration_offset_seconds', 0.0)
         logic.setdefault('min_zone_b_dwell_frames_for_type4', 60)
-        logic.setdefault('enable_global_video', False)
         logic.setdefault('enable_per_id_video', True)
         logic.setdefault('per_id_video_dir', DEFAULT_PER_ID_VIDEO_DIR)
         per_id_video_dir = str(logic.get('per_id_video_dir', '') or '').strip()

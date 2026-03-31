@@ -39,8 +39,8 @@ from .storage_cleanup import RetentionPolicy, RuntimeStorageCleaner
 from .text_render import draw_text
 from .tracking import VehicleTracker
 from .video_io import (
-    FfmpegH264Writer,
     _resolve_runtime_path,
+    create_h264_video_writer,
     create_video_reader,
     detect_source_mode,
     finalize_per_id_recording,
@@ -380,7 +380,6 @@ def process_video(path, args):
     output_dir = getattr(args, 'output_dir', None)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-    video_writer = None
     csv_writer = None
     csv_f = None
     plate_lock_frames = int(getattr(args, 'plate_lock_frames', 2))
@@ -583,7 +582,7 @@ def process_video(path, args):
 
             target_path = base_dir / fname
             try:
-                writer_obj = FfmpegH264Writer(
+                writer_obj, writer_meta = create_h264_video_writer(
                     str(target_path),
                     per_id_target_width,
                     per_id_target_height,
@@ -598,16 +597,17 @@ def process_video(path, args):
                 cleanup_empty_per_id_dirs(base_dir, root)
                 continue
 
-            if writer_obj.is_opened():
+            if writer_obj is not None and writer_obj.is_opened():
+                if writer_meta:
+                    print(
+                        f'[per-id-video] writer selected backend={writer_meta.get("writer_backend")} '
+                        f'mode={writer_meta.get("writer_mode")} path={target_path}'
+                    )
                 if is_fallback_root:
                     print(f'[per-id-video] switched to local fallback directory: {root}')
                     per_id_video_dir = root
                 return writer_obj
 
-            try:
-                writer_obj.release()
-            except Exception:
-                pass
             label = 'local fallback' if is_fallback_root else 'configured'
             print(f'[per-id-video] H.264 writer init failed ({label}), track={track_id} path={target_path}')
             cleanup_empty_per_id_dirs(base_dir, root)
@@ -1096,10 +1096,6 @@ def process_video(path, args):
                     row_idx = det_ref.get('row_idx', -1)
                     if row_idx is not None and 0 <= row_idx < len(rows):
                         rows[row_idx][7] = track_id
-                    if track_id > 0 and video_writer:
-                        x1, y1, _, _ = det_ref['box']
-                        cv2.putText(frame_out, f'CID:{track_id}', (x1, y1 - 5),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1, cv2.LINE_AA)
                 active_car_ids = {det_ref.get('track_id', -1) for det_ref in vehicle_payload_refs if det_ref.get('track_id', -1) > 0}
                 license_dets = [d for d in det_payload if d.get('cls') == LICENSE_CLASS] if det_payload else []
                 if license_dets and car_boxes:
@@ -1166,17 +1162,6 @@ def process_video(path, args):
                             'plate_type': det.get('plate_type', ''),
                             'car_id': locked_car_id if locked_car_id is not None else -1,
                         }
-                        if video_writer and text_val:
-                            x1, y1, _, _ = det['box']
-                            draw_text(
-                                frame_out,
-                                f'PID:{plate_id} {text_val}',
-                                (x1, max(0, y1 - 10)),
-                                font_scale=0.5,
-                                color=(0, 200, 255),
-                                thickness=1,
-                                anchor='lb',
-                            )
                 removed_locked_ids = _cleanup_plate_binding_states(
                     plate_binding_states=plate_binding_states,
                     frame_idx=next_frame_to_write,
@@ -1588,8 +1573,6 @@ def process_video(path, args):
             track_state = event_manager.tracks.get(tid) or {}
             close_per_id_writer(tid, track_state)
 
-    if video_writer:
-        video_writer.release()
     if csv_f:
         csv_f.close()
     cap.release()

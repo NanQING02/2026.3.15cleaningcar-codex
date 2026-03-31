@@ -86,7 +86,6 @@ def apply_cli_overrides(args, config):
     maybe_set('workers', video_cfg.get('workers'))
     maybe_set('core_mask', video_cfg.get('core_mask'))
     maybe_set('fp_output_mode', video_cfg.get('fp_output_mode'))
-    maybe_set('save_video', video_cfg.get('save_video'))
     maybe_set('csv', video_cfg.get('csv'))
     cfg = config or {}
     sys_cfg = cfg.get('system', {})

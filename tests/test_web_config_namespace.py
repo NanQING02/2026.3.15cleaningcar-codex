@@ -25,6 +25,11 @@ class WebConfigNamespaceTests(unittest.TestCase):
             "system": {"device_id": device_id},
             "logic": {"lane_name": lane_name or name},
             "video": {"source": "demo.mp4"},
+            "zones": {
+                "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+            },
         }
         path = self.config_dir / name
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

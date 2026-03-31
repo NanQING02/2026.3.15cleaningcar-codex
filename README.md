@@ -67,6 +67,47 @@
 - `logic.per_id_video_dir` 留空、空白或不可写时，统一回退到 `video_result/per_id/`
 - 截图与单车视频已经接入按天数 + 按数量的周期清理
 
+## 当前默认配置快照
+
+以 `configs/config.json` 为准，当前仓库默认口径大致如下：
+
+- 视频源：RTSP，`video.source_mode=camera`
+- 解码：`video.hw_decode=true`
+- 推理并发：`video.workers=2`，`video.core_mask=0-1`
+- 画面叠加：`logic.no_draw=true`
+- 调试帧：`video.debug_frame_path=off`
+- 车牌副链路降频：`logic.plate_infer_stride=2`
+- 单车视频：`logic.enable_per_id_video=true`
+- 检测 CSV：`video.csv=./video_result/test.csv`
+- 事件截图上报格式：`system.api.capture_mode=base64`
+
+说明：
+
+- 上述只是当前仓库默认值，运行时仍以实际配置文件和 Web 保存结果为准
+- 涉及性能、正确性和旁路开销时，优先同时对照 `configs/config.json` 与 `cleaningcar/pipeline.py`
+
+## 主链路速览
+
+当前最重要的主链路是：
+
+1. `run_zone_detect.py`
+2. `cleaningcar/cli.py`
+3. `cleaningcar/pipeline.py`
+4. `cleaningcar/video_io.py`
+5. `cleaningcar/worker.py`
+6. `cleaningcar/tracking.py` + `cleaningcar/plate.py` + `zone_manager.py`
+7. `cleaningcar/events.py`
+
+如果只是为了快速理解“拉流 -> 解码 -> 推理 -> 跟踪/结果组装 -> 上报”，建议先看：
+
+- `cleaningcar/pipeline.py`
+- `cleaningcar/video_io.py`
+- `cleaningcar/worker.py`
+- `cleaningcar/tracking.py`
+- `cleaningcar/plate.py`
+- `zone_manager.py`
+- `cleaningcar/events.py`
+
 ## 快速启动
 
 ### 1. 安装运行环境
@@ -157,11 +198,26 @@ python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 
 ## 推荐阅读顺序
 
-- `cleaningcar/README.md`
-- `configs/README.md`
-- `docs/README.md`
-- `docs/总览说明/项目功能与使用说明.md`
-- `docs/部署验收/环境目录说明.md`
-- `docs/部署验收/运行路径说明.md`
-- `docs/部署验收/心跳与截图对接说明.md`
-- `docs/部署验收/板端验收清单.md`
+建议其他 agent 或后续接手者按下面顺序建立上下文：
+
+1. `README.md`
+2. `cleaningcar/README.md`
+3. `configs/README.md`
+4. `cleaningcar/pipeline.py`
+5. `cleaningcar/video_io.py`
+6. `cleaningcar/worker.py`
+7. `cleaningcar/tracking.py`
+8. `cleaningcar/plate.py`
+9. `zone_manager.py`
+10. `cleaningcar/events.py`
+11. `docs/README.md`
+12. `docs/总览说明/项目功能与使用说明.md`
+13. `docs/部署验收/运行路径说明.md`
+14. `docs/部署验收/心跳与截图对接说明.md`
+15. `docs/部署验收/板端验收清单.md`
+
+补充说明：
+
+- `docs/总览说明/` 是当前项目总览的主入口
+- `docs/部署验收/` 里同时包含“当前仍有效”的部署文档和“带时间/环境前提”的专项文档
+- 遇到 `甲方设备MPP环境说明.md`、`甲方RK3588板端*.md`、`部署前性能评估与低风险优化建议.md` 这类文档时，要先看文首说明，再判断是不是当前场景
