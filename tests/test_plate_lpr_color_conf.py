@@ -72,6 +72,22 @@ class PlateLprColorConfTests(unittest.TestCase):
         self.assertIn("plate_color_conf", results[0])
         self.assertAlmostEqual(float(results[0]["plate_color_conf"]), 0.77, places=6)
 
+    def test_infer_frame_skips_tiny_plate_roi(self):
+        recognizer = DualPlateRecognizer.__new__(DualPlateRecognizer)
+        recognizer._detect = lambda frame, conf_thresh, iou_thresh: np.array(
+            [[0.0, 0.0, 10.0, 10.0, 0.95, 0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0, 0.0]],
+            dtype=np.float32,
+        )
+        recognizer._recognize = lambda roi: (_ for _ in ()).throw(AssertionError("tiny roi should be skipped"))
+
+        with patch("cleaningcar.plate_lpr._four_point_transform", return_value=np.ones((3, 6, 3), dtype=np.uint8)):
+            results = recognizer.infer_frame(np.zeros((24, 24, 3), dtype=np.uint8))
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["text"], "")
+        self.assertEqual(results[0]["plate_color"], "")
+        self.assertEqual(float(results[0]["plate_color_conf"]), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

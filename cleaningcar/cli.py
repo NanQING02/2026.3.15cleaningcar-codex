@@ -12,6 +12,25 @@ from .runtime_config import (
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+
+def _parse_bool_like(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configure_rga_environment(config):
+    if "CLEANINGCAR_RGA_DISABLE" in os.environ:
+        return
+    if "CLEANINGCAR_RGA_ENABLE" in os.environ:
+        os.environ["CLEANINGCAR_RGA_DISABLE"] = "0" if _parse_bool_like(os.environ["CLEANINGCAR_RGA_ENABLE"]) else "1"
+        return
+    video_cfg = (config or {}).get("video", {})
+    enabled = _parse_bool_like(video_cfg.get("rga_enable", False))
+    os.environ["CLEANINGCAR_RGA_DISABLE"] = "0" if enabled else "1"
+
 def parse_args():
     ap = argparse.ArgumentParser(description='Multithread RKNN detector demo.')
     ap.add_argument('--model', default='models/detection/best.rknn')
@@ -70,7 +89,6 @@ def iter_videos(args):
 
 def main():
     args = parse_args()
-    from .pipeline import process_video
 
     config_path = getattr(args, 'config', None)
     if config_path:
@@ -84,6 +102,8 @@ def main():
     except ValueError as exc:
         print(exc)
         return
+    _configure_rga_environment(config)
+    from .pipeline import process_video
     apply_cli_overrides(args, config)
     apply_class_thresholds_from_config(config)
     setattr(args, 'config', str(resolved_config_path))

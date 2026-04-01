@@ -1,5 +1,6 @@
 import os
 import ctypes
+import threading
 
 import cv2
 import numpy as np
@@ -52,6 +53,15 @@ class _RgaBuffer(ctypes.Structure):
 def _is_true_env(name):
     value = os.environ.get(name, "")
     return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _read_positive_int_env(name, default):
+    raw = os.environ.get(name, "")
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return int(default)
+    return max(1, value)
 
 
 def _align_up(value, align):
@@ -152,6 +162,9 @@ else:
             print("[rga-resize-plugin] load so failed:", _load_error)
 
 _RGA_CALL_FAIL_COUNT = 0
+_RGA_SKIP_COUNT = 0
+_RGA_CALL_LOCK = threading.Lock()
+_RGA_MIN_DIM = _read_positive_int_env("CLEANINGCAR_RGA_MIN_DIM", 64)
 
 
 def _resize_with_librga(src, dst):
@@ -191,6 +204,46 @@ def _err_to_text(code):
         return ""
 
 
+def _log_rga_skip(reason, image, tw, th):
+    global _RGA_SKIP_COUNT
+    _RGA_SKIP_COUNT += 1
+    if _RGA_SKIP_COUNT > 3 and _RGA_SKIP_COUNT % 100 != 0:
+        return
+    shape = getattr(image, "shape", None)
+    dtype = getattr(image, "dtype", None)
+    contiguous = bool(getattr(getattr(image, "flags", None), "c_contiguous", False))
+    print(
+        "[rga-resize-plugin] fallback to cv2: "
+        f"reason={reason} src_shape={shape} dst_shape=({th}, {tw}, 3) "
+        f"dtype={dtype} contiguous={contiguous} count={_RGA_SKIP_COUNT}"
+    )
+
+
+def _cv_resize(im, tw, th):
+    return cv2.resize(im, (max(1, int(tw)), max(1, int(th))), interpolation=cv2.INTER_LINEAR)
+
+
+def _rga_skip_reason(im, tw, th):
+    if im is None:
+        return "image_none"
+    if not isinstance(im, np.ndarray):
+        return "not_ndarray"
+    if im.ndim != 3 or im.shape[2] != 3:
+        return "invalid_shape"
+    if im.dtype != np.uint8:
+        return "invalid_dtype"
+    if im.size == 0:
+        return "empty_image"
+    h, w = im.shape[:2]
+    if h <= 0 or w <= 0:
+        return "empty_shape"
+    if tw <= 0 or th <= 0:
+        return "invalid_target"
+    if min(h, w, th, tw) < _RGA_MIN_DIM:
+        return f"small_dim_lt_{_RGA_MIN_DIM}"
+    return ""
+
+
 def rga_resize(im, new_unpad):
     tw, th = int(new_unpad[0]), int(new_unpad[1])
     if im is None:
@@ -199,11 +252,13 @@ def rga_resize(im, new_unpad):
     if w == tw and h == th:
         return im
     if tw <= 0 or th <= 0:
-        return cv2.resize(im, (max(1, tw), max(1, th)), interpolation=cv2.INTER_LINEAR)
+        return _cv_resize(im, tw, th)
     if (not RGA_OK) or (_lib is None):
-        return cv2.resize(im, (tw, th), interpolation=cv2.INTER_LINEAR)
-    if im.dtype != np.uint8 or im.ndim != 3 or im.shape[2] != 3:
-        return cv2.resize(im, (tw, th), interpolation=cv2.INTER_LINEAR)
+        return _cv_resize(im, tw, th)
+    skip_reason = _rga_skip_reason(im, tw, th)
+    if skip_reason:
+        _log_rga_skip(skip_reason, im, tw, th)
+        return _cv_resize(im, tw, th)
 
     src_wstride = _align_bgr888_stride(w)
     dst_wstride = _align_bgr888_stride(tw)
@@ -215,7 +270,8 @@ def rga_resize(im, new_unpad):
         src = src_pad
 
     dst = np.empty((th, dst_wstride, 3), dtype=np.uint8)
-    ret = _resize_with_librga(src, dst)
+    with _RGA_CALL_LOCK:
+        ret = _resize_with_librga(src, dst)
     if ret < IM_STATUS_SUCCESS:
         global _RGA_CALL_FAIL_COUNT
         _RGA_CALL_FAIL_COUNT += 1
@@ -224,11 +280,18 @@ def rga_resize(im, new_unpad):
             if err_text:
                 print(
                     f"[rga-resize-plugin] imresize_t failed: ret={ret} err='{err_text}' "
+                    f"src_shape={src.shape} dst_shape={dst.shape} "
+                    f"src_stride={src_wstride} dst_stride={dst_wstride} "
                     f"count={_RGA_CALL_FAIL_COUNT}"
                 )
             else:
-                print(f"[rga-resize-plugin] imresize_t failed: ret={ret} count={_RGA_CALL_FAIL_COUNT}")
-        return cv2.resize(im, (tw, th), interpolation=cv2.INTER_LINEAR)
+                print(
+                    f"[rga-resize-plugin] imresize_t failed: ret={ret} "
+                    f"src_shape={src.shape} dst_shape={dst.shape} "
+                    f"src_stride={src_wstride} dst_stride={dst_wstride} "
+                    f"count={_RGA_CALL_FAIL_COUNT}"
+                )
+        return _cv_resize(im, tw, th)
 
     if dst_wstride == tw:
         return dst

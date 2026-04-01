@@ -14,6 +14,15 @@ _PLATE_NAME = PLATE_DECODE_CHARS
 _PLATE_COLORS = PLATE_COLOR_NAMES
 
 
+def _is_viable_plate_roi(img: np.ndarray, min_width: int = 8, min_height: int = 4) -> bool:
+    if img is None or not isinstance(img, np.ndarray):
+        return False
+    if img.ndim != 3 or img.shape[2] != 3 or img.size == 0:
+        return False
+    h, w = img.shape[:2]
+    return h >= int(min_height) and w >= int(min_width)
+
+
 def _letter_box(img: np.ndarray, size: Tuple[int, int] = (640, 640)) -> Tuple[np.ndarray, float, int, int]:
     h, w = img.shape[:2]
     r = min(size[0] / h, size[1] / w)
@@ -209,7 +218,7 @@ class DualPlateRecognizer:
         return (exp_v / denom).astype(np.float32)
 
     def _recognize(self, plate_bgr: np.ndarray) -> Tuple[str, str, float]:
-        if plate_bgr is None or plate_bgr.size == 0:
+        if not _is_viable_plate_roi(plate_bgr):
             return "", "", 0.0
 
         plate = resize_bgr(plate_bgr, (168, 48))
@@ -261,12 +270,15 @@ class DualPlateRecognizer:
             plate_type = "double" if plate_type_id == 1 else "single"
 
             roi = _four_point_transform(frame_bgr, landmarks_np)
-            if roi.size == 0:
+            if not _is_viable_plate_roi(roi):
                 text, plate_color, plate_color_conf = "", "", 0.0
             else:
                 if plate_type_id == 1:
                     roi = _split_merge_double_plate(roi)
-                text, plate_color, plate_color_conf = self._recognize(roi)
+                if not _is_viable_plate_roi(roi):
+                    text, plate_color, plate_color_conf = "", "", 0.0
+                else:
+                    text, plate_color, plate_color_conf = self._recognize(roi)
 
             results.append(
                 {

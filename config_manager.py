@@ -63,6 +63,7 @@ class ConfigManager:
         video.setdefault('hw_decode', False)
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')
+        video.setdefault('rga_enable', False)
         video.setdefault('fp_output_mode', '6')
         video.setdefault('csv', '')
         video.setdefault('debug_frame_path', '/dev/shm/cleaningcar_debug.jpg')

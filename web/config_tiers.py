@@ -22,6 +22,7 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "video.hw_decode", "tier": TIER_USER, "group": "video", "label": "硬解"},
     {"path": "video.workers", "tier": TIER_USER, "group": "video", "label": "推理线程数"},
     {"path": "video.core_mask", "tier": TIER_USER, "group": "video", "label": "NPU Core Mask"},
+    {"path": "video.rga_enable", "tier": TIER_DEVELOPER, "group": "video", "label": "RGA Resize"},
     {"path": "logic.lane_name", "tier": TIER_USER, "group": "logic", "label": "车道名称"},
     {"path": "logic.enable_per_id_video", "tier": TIER_USER, "group": "logic", "label": "按车 ID 录像"},
     {"path": "logic.per_id_video_dir", "tier": TIER_USER, "group": "logic", "label": "按车 ID 录像目录"},

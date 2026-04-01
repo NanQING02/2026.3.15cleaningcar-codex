@@ -79,6 +79,30 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertNotIn("logic.per_id_auto_cpu_low", field_paths)
         self.assertNotIn("logic.per_id_max_frame_stride", field_paths)
 
+    def test_config_manager_defaults_rga_to_disabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {"source": "demo.mp4"},
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+
+            self.assertIn("rga_enable", manager.video)
+            self.assertFalse(manager.video["rga_enable"])
+
+    def test_web_config_registry_exposes_rga_toggle(self):
+        field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
+
+        self.assertIn("video.rga_enable", field_paths)
+
 
 if __name__ == "__main__":
     unittest.main()
