@@ -256,21 +256,22 @@
             </label>
           </div>
           <div class="subsection">
-            <h4>清理策略</h4>
-            <label>清理检查间隔（秒）
-              <input type="number" min="60" v-model.number="form.storage.clean_interval_seconds" />
+            <h4>清理策略（暂未启用）</h4>
+            <p class="hint">清理相关配置当前暂未启用，仅保留字段占位，现阶段不会驱动主程序自动清理。</p>
+            <label>清理检查间隔（秒）（暂未启用）
+              <input type="number" min="60" v-model.number="form.storage.clean_interval_seconds" disabled />
             </label>
-            <label>截图保留天数
-              <input type="number" min="1" v-model.number="form.storage.capture_keep_days" />
+            <label>截图保留天数（暂未启用）
+              <input type="number" min="1" v-model.number="form.storage.capture_keep_days" disabled />
             </label>
-            <label>截图保留数量
-              <input type="number" min="1" v-model.number="form.storage.capture_keep_count" />
+            <label>截图保留数量（暂未启用）
+              <input type="number" min="1" v-model.number="form.storage.capture_keep_count" disabled />
             </label>
-            <label>单车视频保留天数
-              <input type="number" min="1" v-model.number="form.storage.per_id_video_keep_days" />
+            <label>单车视频保留天数（暂未启用）
+              <input type="number" min="1" v-model.number="form.storage.per_id_video_keep_days" disabled />
             </label>
-            <label>单车视频保留数量
-              <input type="number" min="1" v-model.number="form.storage.per_id_video_keep_count" />
+            <label>单车视频保留数量（暂未启用）
+              <input type="number" min="1" v-model.number="form.storage.per_id_video_keep_count" disabled />
             </label>
           </div>
           <div class="subsection">

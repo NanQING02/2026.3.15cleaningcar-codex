@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List, Optional, Set
 
 
 _SNAPSHOT_SUFFIXES = ("_raw", "_annotated")
+RUNTIME_STORAGE_CLEANUP_ENABLED = False
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,8 @@ class RuntimeStorageCleaner:
     def run_once(self, now: Optional[float] = None, reason: str = "manual") -> None:
         now_ts = float(time.time() if now is None else now)
         self._last_run_ts = now_ts
+        if not RUNTIME_STORAGE_CLEANUP_ENABLED:
+            return
         for policy in self.policies:
             try:
                 self._apply_policy(policy, now_ts, reason)

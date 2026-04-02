@@ -79,12 +79,12 @@ class GlobalVideoCleanupTests(unittest.TestCase):
         self.assertNotIn("logic.per_id_auto_cpu_low", field_paths)
         self.assertNotIn("logic.per_id_max_frame_stride", field_paths)
 
-    def test_config_manager_defaults_rga_to_disabled(self):
+    def test_config_manager_strips_obsolete_rga_field(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"
             payload = {
                 "system": {"device_id": "cam-a"},
-                "video": {"source": "demo.mp4"},
+                "video": {"source": "demo.mp4", "rga_enable": True},
                 "zones": {
                     "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
                     "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
@@ -95,13 +95,25 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
             manager = ConfigManager(path)
 
-            self.assertIn("rga_enable", manager.video)
-            self.assertFalse(manager.video["rga_enable"])
+            self.assertNotIn("rga_enable", manager.video)
 
-    def test_web_config_registry_exposes_rga_toggle(self):
+    def test_web_config_registry_hides_rga_toggle(self):
         field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 
-        self.assertIn("video.rga_enable", field_paths)
+        self.assertNotIn("video.rga_enable", field_paths)
+
+    def test_storage_fields_are_marked_as_temporarily_disabled(self):
+        labels = {
+            item["path"]: item["label"]
+            for item in CONFIG_FIELD_REGISTRY
+            if item["path"].startswith("storage.")
+        }
+
+        self.assertIn("暂未启用", labels["storage.clean_interval_seconds"])
+        self.assertIn("暂未启用", labels["storage.capture_keep_days"])
+        self.assertIn("暂未启用", labels["storage.capture_keep_count"])
+        self.assertIn("暂未启用", labels["storage.per_id_video_keep_days"])
+        self.assertIn("暂未启用", labels["storage.per_id_video_keep_count"])
 
 
 if __name__ == "__main__":

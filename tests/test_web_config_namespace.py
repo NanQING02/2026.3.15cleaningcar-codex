@@ -64,6 +64,13 @@ class WebConfigNamespaceTests(unittest.TestCase):
         self.assertEqual(payload["system"]["device_id"], "camera-b")
         self.assertEqual(payload["logic"]["lane_name"], "B")
 
+    def test_zone_editor_marks_cleanup_section_as_temporarily_disabled(self):
+        template_path = Path(__file__).resolve().parent.parent / "web" / "templates" / "zone_editor.html"
+        text = template_path.read_text(encoding="utf-8")
+
+        self.assertIn("清理策略（暂未启用）", text)
+        self.assertIn("清理相关配置当前暂未启用", text)
+
 
 if __name__ == "__main__":
     unittest.main()

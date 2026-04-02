@@ -17,6 +17,7 @@ FFMPEG_HW_DECODER_CANDIDATES = (
     'vp8_rkmpp',
     'vp9_rkmpp',
 )
+DELETE_UNQUALIFIED_PER_ID_VIDEO = True
 
 
 class FfmpegH264Writer:
@@ -649,7 +650,7 @@ def finalize_per_id_recording(writer, track_id, track_state, event_manager):
     output_path = Path(getattr(writer, 'path', '') or '')
     keep_video = bool(state.get('type2_qualified'))
     if not keep_video:
-        if output_path:
+        if DELETE_UNQUALIFIED_PER_ID_VIDEO and output_path:
             try:
                 output_path.unlink(missing_ok=True)
             except Exception:

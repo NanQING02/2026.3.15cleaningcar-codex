@@ -18,7 +18,6 @@
     "rtsp_appsink_max_buffers": 1,
     "workers": 2,
     "core_mask": "0-1",
-    "rga_enable": false,
     "fp_output_mode": "6",
     "csv": "./video_result/test.csv",
     "debug_frame_path": "off",

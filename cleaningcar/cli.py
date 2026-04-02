@@ -22,14 +22,7 @@ def _parse_bool_like(value):
 
 
 def _configure_rga_environment(config):
-    if "CLEANINGCAR_RGA_DISABLE" in os.environ:
-        return
-    if "CLEANINGCAR_RGA_ENABLE" in os.environ:
-        os.environ["CLEANINGCAR_RGA_DISABLE"] = "0" if _parse_bool_like(os.environ["CLEANINGCAR_RGA_ENABLE"]) else "1"
-        return
-    video_cfg = (config or {}).get("video", {})
-    enabled = _parse_bool_like(video_cfg.get("rga_enable", False))
-    os.environ["CLEANINGCAR_RGA_DISABLE"] = "0" if enabled else "1"
+    os.environ["CLEANINGCAR_RGA_DISABLE"] = "1"
 
 def parse_args():
     ap = argparse.ArgumentParser(description='Multithread RKNN detector demo.')

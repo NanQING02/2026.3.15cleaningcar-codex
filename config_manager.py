@@ -59,11 +59,11 @@ class ConfigManager:
         if 'source' not in video:
             raise ConfigError('video.source missing')
         video.pop('save_video', None)
+        video.pop('rga_enable', None)
         video.setdefault('source_mode', 'auto')
         video.setdefault('hw_decode', False)
         video.setdefault('workers', 2)
         video.setdefault('core_mask', '0-2')
-        video.setdefault('rga_enable', False)
         video.setdefault('fp_output_mode', '6')
         video.setdefault('csv', '')
         video.setdefault('debug_frame_path', '/dev/shm/cleaningcar_debug.jpg')
