@@ -111,9 +111,13 @@ python run_zone_detect.py --config configs/config.json --fp_output_mode 6
 python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 ```
 
-手工启动 Web：
+启动 Web：
 
 ```bash
-source venv-gst/bin/activate
 ./start_web_server.sh start
 ```
+
+说明：
+
+- 首次执行会自动安装或修复 `venv-gst`
+- 环境已就绪时会直接拉起 Web

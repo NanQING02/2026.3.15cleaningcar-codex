@@ -23,5 +23,5 @@
 
 ## 使用方式
 
-- `install_runtime_venv.sh` 会优先从这里安装或复制依赖
+- 首次执行 `./start_web_server.sh start` 时，内部会通过 `install_runtime_venv.sh` 优先从这里安装或复制依赖
 - 板端交付时建议整个目录一起带上

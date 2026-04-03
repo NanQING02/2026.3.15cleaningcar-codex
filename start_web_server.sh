@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/venv-gst"
+INSTALL_SCRIPT="$SCRIPT_DIR/install_runtime_venv.sh"
 WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-8000}"
 SERVICE_NAME="web_server_${WEB_PORT}"
@@ -33,6 +34,28 @@ resolve_config_path() {
   fi
   echo "config file not found: $default_config" >&2
   return 1
+}
+
+is_runtime_ready() {
+  local python_bin="$VENV_DIR/bin/python"
+  [ -x "$python_bin" ] || return 1
+  "$python_bin" -V >/dev/null 2>&1
+}
+
+ensure_runtime_ready() {
+  if is_runtime_ready; then
+    return 0
+  fi
+  if [ ! -f "$INSTALL_SCRIPT" ]; then
+    echo "[service] runtime install helper not found: $INSTALL_SCRIPT" >&2
+    exit 1
+  fi
+  echo "[service] runtime not ready, preparing environment"
+  bash "$INSTALL_SCRIPT"
+  if ! is_runtime_ready; then
+    echo "[service] runtime setup did not produce a usable python: $VENV_DIR/bin/python" >&2
+    exit 1
+  fi
 }
 
 port_owner_pids() {
@@ -224,11 +247,8 @@ do_status() {
 do_start() {
   local config_path
   config_path="$(resolve_config_path)"
+  ensure_runtime_ready
   local python_bin="$VENV_DIR/bin/python"
-  if [ ! -x "$python_bin" ]; then
-    echo "[service] missing runtime venv, please run ./install_runtime_venv.sh first"
-    exit 1
-  fi
 
   if [ -f "$PID_FILE" ]; then
     local old_pid

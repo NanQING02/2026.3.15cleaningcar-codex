@@ -270,4 +270,3 @@ except Exception as exc:
 EOF
 
 echo "[setup] runtime environment ready: $VENV_DIR"
-echo "[setup] next step: ./start_web_server.sh"

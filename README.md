@@ -16,24 +16,18 @@
 - 车牌检测模型：`models/plate/plate_detect.rknn`
 - 车牌识别/颜色模型：`models/plate/plate_rec_color.rknn`
 
-## 根目录只保留 4 个脚本
+## 当前对外交付入口
 
-- `install_runtime_venv.sh`
-  - 安装或重建 `venv-gst/`
-  - 安装系统依赖、Python 依赖、RKNN/RGA 运行库
-  - 只安装环境，不启动 Web
 - `start_web_server.sh`
-  - 手工管理 Web 服务
+  - 对外唯一入口
+  - 首次执行 `start` 或 `restart` 时会自动安装或修复 `venv-gst/`
+  - 环境已就绪时直接拉起 Web，不重复安装
   - 支持 `start|stop|restart|status`
   - 后台启动时会写 `web_server_<port>.pid` 和 `web_server_<port>.log`
-- `uninstall_runtime_venv.sh`
-  - 停止手工 Web
-  - 删除 `venv-gst/`
-  - 若已安装 `cleaningcar-web.service`，会一并停用并移除
-- `install_cleaningcar_systemd.sh`
-  - 安装并启用 `cleaningcar-web.service`
-  - 开机只启动 Web，不自动启动推理
-  - 安装前会先停止当前手工 Web，避免端口冲突
+- `install_runtime_venv.sh`
+  - 内部运行环境安装 helper
+  - 由 `start_web_server.sh` 自动调用
+  - 甲方一般不需要手工执行
 
 ## 核心入口文件说明
 
@@ -114,22 +108,17 @@
 
 ## 快速启动
 
-### 1. 安装运行环境
+### 1. 一键启动 Web
 
 ```bash
-chmod +x install_runtime_venv.sh
-./install_runtime_venv.sh
-```
-
-### 2. 手工启动 Web
-
-建议先激活虚拟环境，后续排查命令会更一致；脚本本身也会直接使用 `venv-gst/bin/python`。
-
-```bash
-source venv-gst/bin/activate
 chmod +x start_web_server.sh
 ./start_web_server.sh start
 ```
+
+说明：
+
+- 第一次执行会自动安装或修复运行环境，然后拉起 Web
+- 后续执行检测到 `venv-gst` 可用时会直接启动，不重复安装
 
 常用动作：
 
@@ -139,11 +128,32 @@ chmod +x start_web_server.sh
 ./start_web_server.sh stop
 ```
 
-### 3. 安装 `systemd` Web 服务
+### 2. 甲方自行配置 `systemd` 守护（可选）
+
+仓库不再提供自动安装脚本。如果甲方需要开机守护，建议先手工执行一次 `./start_web_server.sh start`，确认环境已经装好且 Web 可以正常启动，再自行创建 `/etc/systemd/system/cleaningcar-web.service`：
 
 ```bash
-chmod +x install_cleaningcar_systemd.sh
-./install_cleaningcar_systemd.sh
+cat <<'EOF' | sudo tee /etc/systemd/system/cleaningcar-web.service >/dev/null
+[Unit]
+Description=CleaningCar Web Service
+After=network.target
+
+[Service]
+Type=simple
+User=<运行用户>
+Group=<运行组>
+WorkingDirectory=/path/to/cleaningcar-delivery
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/path/to/cleaningcar-delivery/venv-gst/bin/python -m web.server --config /path/to/cleaningcar-delivery/configs/config.json --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now cleaningcar-web
 systemctl status cleaningcar-web --no-pager
 ```
 
@@ -151,22 +161,16 @@ systemctl status cleaningcar-web --no-pager
 
 - `systemctl stop cleaningcar-web` 属于人工停止，不会自动重启
 - 直接 `kill` / `kill -9` Web 主进程会被 `systemd` 视为异常退出并拉起
+- `ExecStart` 请按实际交付目录、配置文件路径和运行用户替换
 
-### 4. 卸载运行环境
-
-```bash
-chmod +x uninstall_runtime_venv.sh
-./uninstall_runtime_venv.sh
-```
-
-### 5. 直接启动主程序
+### 3. 直接启动主程序
 
 ```bash
 source venv-gst/bin/activate
 python run_zone_detect.py --config configs/config.json
 ```
 
-### 6. 切换 FP 后处理模式
+### 4. 切换 FP 后处理模式
 
 ```bash
 python run_zone_detect.py --config configs/config.json --fp_output_mode 6
@@ -192,7 +196,7 @@ python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 - `requirements.txt` 已包含 `Pillow`
 - `captureImage` 现在只代表“截图文件真实存在”
 - 手工停 Web 请使用 `./start_web_server.sh stop`
-- 使用 `systemd` 时，人工停服务请使用 `systemctl stop cleaningcar-web`
+- 若甲方自行配置 `systemd`，人工停服务请使用 `systemctl stop cleaningcar-web`
 - 当前清理策略配置项：
   - `storage.clean_interval_seconds`
   - `storage.capture_keep_days`
@@ -225,4 +229,3 @@ python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 - `docs/总览说明/` 是当前项目总览的主入口
 - `docs/部署验收/` 里同时包含“当前仍有效”的部署文档和“带时间/环境前提”的专项文档
 - 遇到 `甲方设备MPP环境说明.md`、`甲方RK3588板端*.md`、`部署前性能评估与低风险优化建议.md` 这类文档时，要先看文首说明，再判断是不是当前场景
-

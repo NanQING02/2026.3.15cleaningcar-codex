@@ -26,18 +26,23 @@
 
 ## 使用方式
 
-手工启动：
+推荐通过根目录脚本启动：
+
+```bash
+chmod +x start_web_server.sh
+./start_web_server.sh start
+```
+
+说明：
+
+- 首次执行会自动安装或修复 `venv-gst`
+- 环境已就绪时会直接拉起 Web
+
+如需直接调试 Web 入口，可在环境已准备好后执行：
 
 ```bash
 source venv-gst/bin/activate
 python -m web.server --config configs/config.json --host 0.0.0.0 --port 8000
-```
-
-或直接使用根目录脚本：
-
-```bash
-source venv-gst/bin/activate
-./start_web_server.sh start
 ```
 
 ## 当前配置分层口径
