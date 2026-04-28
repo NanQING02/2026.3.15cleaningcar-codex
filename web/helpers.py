@@ -127,5 +127,5 @@ def _capture_frame(force: bool = False, key: Optional[str] = None):
 
 def _available_config_files() -> List[Path]:
     base = state.CONFIG_PATH.parent
-    files = list(base.glob("config*.json"))
+    files = [path for path in base.glob("*.json") if path.is_file()]
     return sorted(files)

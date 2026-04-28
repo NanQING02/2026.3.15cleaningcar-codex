@@ -102,18 +102,30 @@ class GlobalVideoCleanupTests(unittest.TestCase):
 
         self.assertNotIn("video.rga_enable", field_paths)
 
-    def test_storage_fields_are_marked_as_temporarily_disabled(self):
-        labels = {
-            item["path"]: item["label"]
-            for item in CONFIG_FIELD_REGISTRY
-            if item["path"].startswith("storage.")
-        }
+    def test_web_config_registry_hides_storage_cleanup_fields(self):
+        field_paths = {item["path"] for item in CONFIG_FIELD_REGISTRY}
 
-        self.assertIn("暂未启用", labels["storage.clean_interval_seconds"])
-        self.assertIn("暂未启用", labels["storage.capture_keep_days"])
-        self.assertIn("暂未启用", labels["storage.capture_keep_count"])
-        self.assertIn("暂未启用", labels["storage.per_id_video_keep_days"])
-        self.assertIn("暂未启用", labels["storage.per_id_video_keep_count"])
+        self.assertFalse(any(path.startswith("storage.") for path in field_paths))
+
+    def test_config_manager_strips_storage_cleanup_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.json"
+            payload = {
+                "system": {"device_id": "cam-a"},
+                "video": {"source": "demo.mp4"},
+                "storage": {"clean_interval_seconds": 1, "capture_keep_days": 1},
+                "zones": {
+                    "zone_a_detection": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "zone_b_wash": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    "flow_vector": {"start": [0.0, 0.0], "end": [1.0, 1.0]},
+                },
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+            manager = ConfigManager(path)
+
+            self.assertNotIn("storage", manager.data)
+            self.assertEqual(manager.storage, {})
 
 
 if __name__ == "__main__":

@@ -82,20 +82,11 @@ FP 检测模型后处理模式：
 - 当留空或仍使用旧默认值 `/dev/shm/cleaningcar_debug.jpg` 时，运行时会自动改写到：
   - `/dev/shm/cleaningcar_runtime/<device_id>/debug.jpg`
 
-### `storage.*`
+### 旧功能：运行产物清理
 
-当前已接入运行产物清理：
-
-- `storage.clean_interval_seconds`
-  - 周期清理间隔
-- `storage.capture_keep_days`
-  - 事件/启动/手动截图保留天数
-- `storage.capture_keep_count`
-  - 事件/启动/手动截图保留数量
-- `storage.per_id_video_keep_days`
-  - 单车视频保留天数
-- `storage.per_id_video_keep_count`
-  - 单车视频保留数量
+- 当前默认配置和 Web 配置页已不再暴露 `storage.*`
+- `storage_cleanup.py` 旧实现仍保留在代码中，但运行期默认禁用
+- 后续如果需要重新启用，建议单独评审清理策略、回收范围和误删风险后再恢复
 
 ## 常用启动命令
 

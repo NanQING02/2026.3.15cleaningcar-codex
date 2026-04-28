@@ -46,13 +46,16 @@ class WebConfigNamespaceTests(unittest.TestCase):
     def test_list_config_files_returns_device_ids(self):
         active = self.write_config("config.json", "camera-a")
         self.write_config("config_b.json", "camera-b")
+        self.write_config("client_lane.json", "camera-c")
         state.set_config_path(active)
 
         payload = server.list_config_files()
 
         self.assertEqual(payload["active"], "config.json")
+        self.assertIn("client_lane.json", payload["files"])
         self.assertEqual(payload["device_ids"]["config.json"], "camera-a")
         self.assertEqual(payload["device_ids"]["config_b.json"], "camera-b")
+        self.assertEqual(payload["device_ids"]["client_lane.json"], "camera-c")
 
     def test_read_config_uses_key(self):
         active = self.write_config("config.json", "camera-a", lane_name="A")
@@ -64,12 +67,14 @@ class WebConfigNamespaceTests(unittest.TestCase):
         self.assertEqual(payload["system"]["device_id"], "camera-b")
         self.assertEqual(payload["logic"]["lane_name"], "B")
 
-    def test_zone_editor_marks_cleanup_section_as_temporarily_disabled(self):
+    def test_zone_editor_hides_legacy_cleanup_and_global_video_controls(self):
         template_path = Path(__file__).resolve().parent.parent / "web" / "templates" / "zone_editor.html"
         text = template_path.read_text(encoding="utf-8")
 
-        self.assertIn("清理策略（暂未启用）", text)
-        self.assertIn("清理相关配置当前暂未启用", text)
+        self.assertNotIn("清理策略", text)
+        self.assertNotIn("全局录像输出", text)
+        self.assertNotIn("save_video", text)
+        self.assertNotIn("enable_global_video", text)
 
 
 if __name__ == "__main__":

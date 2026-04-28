@@ -130,7 +130,7 @@
             <button class="secondary" @click="reloadFrame" :disabled="busy">刷新背景帧</button>
             <button class="secondary" @click="restartInference" :disabled="busy">重启推理</button>
           </div>
-          <p class="hint">这里只放甲方可直接调整的基础参数。算法阈值、调试路径、清理策略等请在“开发者参数”里修改。</p>
+          <p class="hint">这里只放甲方可直接调整的基础参数。算法阈值、调试路径等请在“开发者参数”里修改。</p>
         </section>
         <section class="panel">
           <h3>推理守护进程</h3>
@@ -175,7 +175,7 @@
         </section>
         <section class="panel" v-if="logicView">
           <h3>开发者参数</h3>
-          <p class="hint">这里集中放算法阈值、调试输出、运行时路径和清理策略。基础业务参数请只在“用户参数”面板修改。</p>
+          <p class="hint">这里集中放算法阈值、调试输出和运行时路径。基础业务参数请只在“用户参数”面板修改。</p>
           <div class="subsection">
             <h4>运行时与输出</h4>
             <label>FP 输出模式
@@ -192,9 +192,6 @@
             </label>
             <label>检测 CSV 路径
               <input v-model="form.video.csv" placeholder="./video_result/test.csv" />
-            </label>
-            <label>全局录像输出
-              <input v-model="form.video.save_video" placeholder="./video_result/output.mp4" />
             </label>
             <label>切片分钟数
               <input type="number" min="0" v-model.number="form.video.segment_minutes" />
@@ -253,25 +250,6 @@
             </label>
             <label>手动截图目录
               <input v-model="form.system.manual_capture_dir" placeholder="captures/manual" />
-            </label>
-          </div>
-          <div class="subsection">
-            <h4>清理策略（暂未启用）</h4>
-            <p class="hint">清理相关配置当前暂未启用，仅保留字段占位，现阶段不会驱动主程序自动清理。</p>
-            <label>清理检查间隔（秒）（暂未启用）
-              <input type="number" min="60" v-model.number="form.storage.clean_interval_seconds" disabled />
-            </label>
-            <label>截图保留天数（暂未启用）
-              <input type="number" min="1" v-model.number="form.storage.capture_keep_days" disabled />
-            </label>
-            <label>截图保留数量（暂未启用）
-              <input type="number" min="1" v-model.number="form.storage.capture_keep_count" disabled />
-            </label>
-            <label>单车视频保留天数（暂未启用）
-              <input type="number" min="1" v-model.number="form.storage.per_id_video_keep_days" disabled />
-            </label>
-            <label>单车视频保留数量（暂未启用）
-              <input type="number" min="1" v-model.number="form.storage.per_id_video_keep_count" disabled />
             </label>
           </div>
           <div class="subsection">
@@ -467,7 +445,6 @@
               workers: 2,
               core_mask: '0-2',
               fp_output_mode: '6',
-              save_video: '',
               csv: '',
               debug_frame_path: '',
               debug_frame_interval: 30,
@@ -488,7 +465,6 @@
               vehicle_iou_threshold: 0.3,
               vehicle_center_gate_ratio: 0.0,
               no_draw: false,
-              enable_global_video: true,
               enable_per_id_video: false,
               lane_name: '冲洗',
               vehicle_shrink_ratio: 0.35,
@@ -516,15 +492,6 @@
               min_zone_b_dwell_frames_for_type4: 60,
               per_id_video_dir: './video_result/per_id',
               enable_event_disk: false
-            },
-            storage: {
-              disk_threshold: 65,
-              disk_target: 50,
-              clean_interval_seconds: 600,
-              capture_keep_days: 30,
-              capture_keep_count: 3000,
-              per_id_video_keep_days: 15,
-              per_id_video_keep_count: 500
             },
             zones: {
               zone_a_detection: [],
@@ -755,7 +722,6 @@
           this.form.system.api = this.form.system.api || {};
           this.form.video = this.form.video || {};
           this.form.logic = this.form.logic || {};
-          this.form.storage = this.form.storage || {};
           const z = this.form.zones || {};
           z.zone_a_detection = z.zone_a_detection || [];
           z.zone_b_wash = z.zone_b_wash || [];
@@ -783,7 +749,6 @@
           this.form.video.workers = Number(this.form.video.workers || 2);
           this.form.video.core_mask = this.form.video.core_mask || '0-2';
           this.form.video.fp_output_mode = String(this.form.video.fp_output_mode || '6');
-          this.form.video.save_video = this.form.video.save_video || '';
           this.form.video.csv = this.form.video.csv || '';
           this.form.logic.shadow_plate_pool = this.form.logic.shadow_plate_pool || { max_candidates: 50, max_age_frames: 120 };
           this.form.logic.shadow_plate_pool.max_candidates = Number(this.form.logic.shadow_plate_pool.max_candidates || 50);
@@ -798,9 +763,6 @@
           this.form.logic.debug_anchor_points = !!(this.form.logic.debug_anchor_points || this.form.logic.debug_overlay);
           if (typeof this.form.logic.require_vehicle_type_for_events === 'undefined') {
             this.form.logic.require_vehicle_type_for_events = false;
-          }
-          if (typeof this.form.logic.enable_global_video === 'undefined') {
-            this.form.logic.enable_global_video = true;
           }
           if (typeof this.form.logic.enable_per_id_video === 'undefined') {
             this.form.logic.enable_per_id_video = false;
@@ -826,13 +788,6 @@
           this.form.logic.wash_duration_offset_seconds = Number(this.form.logic.wash_duration_offset_seconds || 0);
           this.form.logic.min_zone_b_dwell_frames_for_type4 = Number(this.form.logic.min_zone_b_dwell_frames_for_type4 || 60);
           this.form.logic.enable_event_disk = !!this.form.logic.enable_event_disk;
-          this.form.storage.disk_threshold = Number(this.form.storage.disk_threshold || 65);
-          this.form.storage.disk_target = Number(this.form.storage.disk_target || 50);
-          this.form.storage.clean_interval_seconds = Number(this.form.storage.clean_interval_seconds || 600);
-          this.form.storage.capture_keep_days = Number(this.form.storage.capture_keep_days || 30);
-          this.form.storage.capture_keep_count = Number(this.form.storage.capture_keep_count || 3000);
-          this.form.storage.per_id_video_keep_days = Number(this.form.storage.per_id_video_keep_days || 15);
-          this.form.storage.per_id_video_keep_count = Number(this.form.storage.per_id_video_keep_count || 500);
           this.form.event_output_dir = this.form.event_output_dir || 'events/config';
           this.form.event_capture_dir = this.form.event_capture_dir || 'captures/config';
           this.form.event_capture_quality = Number(this.form.event_capture_quality || 85);
@@ -907,7 +862,6 @@
             },
             video: {
               fp_output_mode: this.form.video.fp_output_mode,
-              save_video: this.form.video.save_video,
               csv: this.form.video.csv,
               debug_frame_path: this.form.video.debug_frame_path,
               debug_frame_interval: this.form.video.debug_frame_interval,
@@ -928,7 +882,6 @@
               vehicle_iou_threshold: this.form.logic.vehicle_iou_threshold,
               vehicle_center_gate_ratio: this.form.logic.vehicle_center_gate_ratio,
               no_draw: this.form.logic.no_draw,
-              enable_global_video: this.form.logic.enable_global_video,
               vehicle_shrink_ratio: this.form.logic.vehicle_shrink_ratio,
               vehicle_lock_min_votes: this.form.logic.vehicle_lock_min_votes,
               vehicle_lock_on_confirm: this.form.logic.vehicle_lock_on_confirm,
@@ -953,15 +906,6 @@
               wash_duration_offset_seconds: this.form.logic.wash_duration_offset_seconds,
               min_zone_b_dwell_frames_for_type4: this.form.logic.min_zone_b_dwell_frames_for_type4,
               enable_event_disk: this.form.logic.enable_event_disk
-            },
-            storage: {
-              disk_threshold: this.form.storage.disk_threshold,
-              disk_target: this.form.storage.disk_target,
-              clean_interval_seconds: this.form.storage.clean_interval_seconds,
-              capture_keep_days: this.form.storage.capture_keep_days,
-              capture_keep_count: this.form.storage.capture_keep_count,
-              per_id_video_keep_days: this.form.storage.per_id_video_keep_days,
-              per_id_video_keep_count: this.form.storage.per_id_video_keep_count
             },
             event_output_dir: this.form.event_output_dir,
             event_capture_dir: this.form.event_capture_dir,

@@ -8,7 +8,7 @@
 - 单车视频输出
 - Web 管理与 guardian 守护
 - 启动信号、心跳检测、异常重启
-- 运行产物清理
+- 运行产物清理旧实现（当前默认禁用）
 
 ## 当前实际使用的模型
 
@@ -45,8 +45,8 @@
 ### `config_manager.py`
 
 - 读取并校验 `configs/*.json`
-- 给 `system`、`video`、`logic`、`storage` 等配置补默认值
-- 统一处理 `logic.per_id_video_dir`、`storage.*` 清理策略等运行口径
+- 给 `system`、`video`、`logic` 等配置补默认值
+- 统一处理 `logic.per_id_video_dir` 等运行口径
 
 ### `zone_manager.py`
 
@@ -62,7 +62,7 @@
 - 本地文件视频默认只跑一遍，读到 EOF 后退出；只有手动勾选自动重启才会循环
 - `logic.per_id_video_dir` 留空、空白或不可写时，统一回退到 `video_result/per_id/`
 - 全局视频保存功能已彻底删除，当前只保留 `logic.enable_per_id_video`
-- 截图与单车视频已经接入按天数 + 按数量的周期清理
+- 运行产物清理当前默认禁用，旧实现仅保留在代码中备用
 
 ## 当前默认配置快照
 
@@ -197,12 +197,7 @@ python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 - `captureImage` 现在只代表“截图文件真实存在”
 - 手工停 Web 请使用 `./start_web_server.sh stop`
 - 若甲方自行配置 `systemd`，人工停服务请使用 `systemctl stop cleaningcar-web`
-- 当前清理策略配置项：
-  - `storage.clean_interval_seconds`
-  - `storage.capture_keep_days`
-  - `storage.capture_keep_count`
-  - `storage.per_id_video_keep_days`
-  - `storage.per_id_video_keep_count`
+- 当前不对外开放清理策略配置项；`storage_cleanup.py` 仍保留旧实现，但运行期默认禁用
 
 ## 推荐阅读顺序
 

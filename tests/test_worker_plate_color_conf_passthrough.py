@@ -34,6 +34,12 @@ class _FakeRK:
         return [np.array([1.0], dtype=np.float32)]
 
 
+class _FailingRK:
+    @staticmethod
+    def inference(inputs, data_format):
+        raise RuntimeError("boom")
+
+
 class _FakePostprocessor:
     @staticmethod
     def prepare(frame):
@@ -68,7 +74,7 @@ class _FakeDualLpr:
 
 
 class WorkerPlateColorConfTests(unittest.TestCase):
-    def test_worker_passthrough_plate_color_conf_to_det_payload(self):
+    def _build_worker(self, rk=None):
         worker = DetectWorker.__new__(DetectWorker)
         worker.idx = 0
         worker.args = SimpleNamespace(no_draw=True, conf=0.25, iou=0.5)
@@ -76,12 +82,16 @@ class WorkerPlateColorConfTests(unittest.TestCase):
         worker.task_q = queue.Queue()
         worker.result_q = queue.Queue()
         worker.detect_mask = None
-        worker.rk = _FakeRK()
+        worker.rk = rk or _FakeRK()
         worker.detector_postprocessor = _FakePostprocessor()
         worker.dual_lpr = _FakeDualLpr()
         worker.plate_infer_stride = 1
         worker.frames = 0
         worker.infer_time = 0.0
+        return worker
+
+    def test_worker_passthrough_plate_color_conf_to_det_payload(self):
+        worker = self._build_worker()
 
         frame = np.zeros((48, 48, 3), dtype=np.uint8)
         worker.task_q.put((0, frame))
@@ -95,6 +105,25 @@ class WorkerPlateColorConfTests(unittest.TestCase):
         plate_items = [item for item in det_payload if int(item.get("cls", -1)) == int(LICENSE_CLASS)]
         self.assertEqual(len(plate_items), 1)
         self.assertAlmostEqual(float(plate_items[0]["plate_color_conf"]), 0.88, places=6)
+
+    def test_worker_reports_empty_result_and_finishes_queue_when_frame_fails(self):
+        worker = self._build_worker(rk=_FailingRK())
+        frame = np.zeros((48, 48, 3), dtype=np.uint8)
+        worker.task_q.put((12, frame, 123.0))
+        worker.task_q.put(None)
+
+        worker.run()
+
+        result = worker.result_q.get_nowait()
+        self.assertIsNotNone(result)
+        frame_idx, capture_ts, frame_out, rows, det_payload = result
+        self.assertEqual(frame_idx, 12)
+        self.assertEqual(capture_ts, 123.0)
+        self.assertIs(frame_out, frame)
+        self.assertEqual(rows, [])
+        self.assertEqual(det_payload, [])
+        self.assertIsNone(worker.result_q.get_nowait())
+        self.assertEqual(worker.task_q.unfinished_tasks, 0)
 
 
 if __name__ == "__main__":

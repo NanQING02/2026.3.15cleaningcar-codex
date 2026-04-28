@@ -29,7 +29,6 @@ def load_config(path):
     video = mgr.video
     logic = mgr.logic
     zones = mgr.zones
-    storage = mgr.storage
     shadow_cfg = logic.get('shadow_plate_pool', {})
     event_capture_dir = mgr.data.get('event_capture_dir', './captures')
     event_output_dir = mgr.data.get('event_output_dir', './events')
@@ -47,7 +46,6 @@ def load_config(path):
         'video': video,
         'logic': logic,
         'zones': zones,
-        'storage': storage,
         'shadow_pool': shadow_cfg,
         'allowed_event_types': logic.get('allowed_event_types', [1, 2, 3, 4, 5]),
         'track_timeout_frames': int(logic.get('track_timeout_frames', 90)),

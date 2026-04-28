@@ -143,14 +143,7 @@ class ConfigManager:
         shadow.setdefault('max_candidates', 50)
         shadow.setdefault('max_age_frames', 120)
 
-        storage = self.data.setdefault('storage', {})
-        storage.setdefault('disk_threshold', 65.0)
-        storage.setdefault('disk_target', 50.0)
-        storage.setdefault('clean_interval_seconds', 600)
-        storage.setdefault('capture_keep_days', 30)
-        storage.setdefault('capture_keep_count', 3000)
-        storage.setdefault('per_id_video_keep_days', 15)
-        storage.setdefault('per_id_video_keep_count', 500)
+        self.data.pop('storage', None)
 
         self.data.setdefault('event_capture_quality', 85)
 
@@ -183,4 +176,4 @@ class ConfigManager:
 
     @property
     def storage(self):
-        return self.data['storage']
+        return self.data.get('storage', {})
