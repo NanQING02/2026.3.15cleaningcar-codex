@@ -697,13 +697,13 @@
           try {
             const targetName = this.normalizeConfigName(name);
             this.validateDeviceIdUnique(targetName, false);
-            const data = JSON.parse(JSON.stringify(this.form));
-            if (data.wheel) {
-              delete data.wheel.classes_text;
+            const configData = JSON.parse(JSON.stringify(this.form));
+            if (configData.wheel) {
+              delete configData.wheel.classes_text;
             }
             const payload = {
               name,
-              data
+              data: configData
             };
             const res = await fetch('/config/save_as', {
               method: 'POST',
@@ -720,10 +720,10 @@
               } catch (e) {}
               throw new Error(msg);
             }
-            const data = await res.json();
-            this.status = `已保存为 ${data.saved_as}`;
+            const result = await res.json();
+            this.status = `已保存为 ${result.saved_as}`;
             await this.loadConfigFiles();
-            this.selectedConfig = data.saved_as;
+            this.selectedConfig = result.saved_as;
             await this.onConfigChange();
           } catch (err) {
             this.status = err.message;
