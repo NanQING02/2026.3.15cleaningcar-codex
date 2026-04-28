@@ -18,12 +18,14 @@ class RgaResizePluginTests(unittest.TestCase):
         image = np.ones((34, 64, 3), dtype=np.uint8)
         fallback = np.zeros((48, 176, 3), dtype=np.uint8)
 
-        with (
-            patch.object(rga_resize_plugin, "RGA_OK", True),
-            patch.object(rga_resize_plugin, "_lib", object()),
-            patch.object(rga_resize_plugin, "_resize_with_librga", side_effect=AssertionError("should not call librga")),
-            patch("future_modules.acceleration.rga_resize_plugin.cv2.resize", return_value=fallback) as mock_resize,
-        ):
+        with patch.object(rga_resize_plugin, "RGA_OK", True), \
+                patch.object(rga_resize_plugin, "_lib", object()), \
+                patch.object(
+                    rga_resize_plugin,
+                    "_resize_with_librga",
+                    side_effect=AssertionError("should not call librga"),
+                ), \
+                patch("future_modules.acceleration.rga_resize_plugin.cv2.resize", return_value=fallback) as mock_resize:
             result = rga_resize_plugin.rga_resize(image, (176, 48))
 
         self.assertIs(result, fallback)
@@ -46,11 +48,9 @@ class RgaResizePluginTests(unittest.TestCase):
                 active -= 1
             return 1
 
-        with (
-            patch.object(rga_resize_plugin, "RGA_OK", True),
-            patch.object(rga_resize_plugin, "_lib", object()),
-            patch.object(rga_resize_plugin, "_resize_with_librga", side_effect=fake_resize),
-        ):
+        with patch.object(rga_resize_plugin, "RGA_OK", True), \
+                patch.object(rga_resize_plugin, "_lib", object()), \
+                patch.object(rga_resize_plugin, "_resize_with_librga", side_effect=fake_resize):
             threads = [
                 threading.Thread(target=rga_resize_plugin.rga_resize, args=(image, (256, 128)))
                 for _ in range(4)

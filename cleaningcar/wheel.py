@@ -13,7 +13,7 @@ import numpy as np
 
 from .fp_detect import FpModelPostprocessor
 from .log_throttle import WindowedLogThrottle
-from .video_io import create_video_reader
+from .video_io import create_video_reader, parse_core_mask
 
 DEFAULT_WHEEL_CLASSES = ["0-25", "25-50", "50-75", "75-100"]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -98,6 +98,12 @@ def resolve_wheel_settings(config, base_dir=None):
     nms_thresh = _safe_float(raw.get("nms_thresh", 0.45), 0.45)
     if nms_thresh <= 0.0:
         nms_thresh = 0.45
+    imgsz = None
+    if raw.get("imgsz") is not None:
+        try:
+            imgsz = max(64, int(raw.get("imgsz")))
+        except (TypeError, ValueError):
+            imgsz = None
 
     return {
         "enabled": _safe_bool(raw.get("enabled", False)),
@@ -111,6 +117,8 @@ def resolve_wheel_settings(config, base_dir=None):
         "bind_window_seconds": bind_window_seconds,
         "conf_thresh": conf_thresh,
         "nms_thresh": nms_thresh,
+        "imgsz": imgsz,
+        "core_mask": str(raw.get("core_mask", "") or "").strip(),
     }
 
 
@@ -170,14 +178,20 @@ def select_centered_detection(
     return best_item
 
 
-def _encode_frame_base64(frame, image_quality=85):
+def _encode_frame_jpeg_bytes(frame, image_quality=85):
     if frame is None:
-        return ""
+        return b""
     quality = int(min(max(int(image_quality), 1), 100))
     ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     if not ok:
+        return b""
+    return encoded.tobytes()
+
+
+def _jpeg_bytes_to_base64(data):
+    if not data:
         return ""
-    return base64.b64encode(encoded.tobytes()).decode("utf-8")
+    return base64.b64encode(data).decode("utf-8")
 
 
 class WheelResultCache:
@@ -212,15 +226,15 @@ class WheelResultCache:
         if not candidate:
             return False
 
-        image_base64 = _encode_frame_base64(frame, image_quality=self.image_quality)
-        if not image_base64:
+        image_jpeg = _encode_frame_jpeg_bytes(frame, image_quality=self.image_quality)
+        if not image_jpeg:
             return False
 
         capture_ts = time.time() if capture_ts is None else float(capture_ts)
         entry = {
             "side": side,
             "captureTime": datetime.fromtimestamp(capture_ts).strftime("%Y-%m-%d %H:%M:%S"),
-            "imageBase64": image_base64,
+            "imageJpegBytes": image_jpeg,
             "className": candidate["className"],
             "capture_ts": capture_ts,
         }
@@ -245,7 +259,7 @@ class WheelResultCache:
                     {
                         "side": str(entry.get("side") or side),
                         "captureTime": str(entry.get("captureTime") or ""),
-                        "imageBase64": str(entry.get("imageBase64") or ""),
+                        "imageBase64": _jpeg_bytes_to_base64(entry.get("imageJpegBytes", b"")),
                         "className": str(entry.get("className") or ""),
                     }
                 )
@@ -385,6 +399,7 @@ class WheelProcessorThread(threading.Thread):
         imgsz=640,
         conf_thresh=0.25,
         nms_thresh=0.45,
+        core_mask=None,
     ):
         super().__init__(daemon=True)
         self.side = str(side)
@@ -398,6 +413,7 @@ class WheelProcessorThread(threading.Thread):
         self.imgsz = max(64, int(imgsz))
         self.conf_thresh = max(0.0, float(conf_thresh))
         self.nms_thresh = max(0.01, float(nms_thresh))
+        self.core_mask = core_mask
         self.frames = 0
         self.infer_time = 0.0
         self.center_hits = 0
@@ -441,7 +457,10 @@ class WheelProcessorThread(threading.Thread):
             rk = self._build_runtime()
             if rk.load_rknn(str(self.model_path)) != 0:
                 raise RuntimeError("load_rknn failed")
-            if rk.init_runtime() != 0:
+            init_kwargs = {}
+            if self.core_mask is not None:
+                init_kwargs["core_mask"] = self.core_mask
+            if rk.init_runtime(**init_kwargs) != 0:
                 raise RuntimeError("init_runtime failed")
         except Exception as exc:
             print(f"[wheel:{self.side}] runtime init failed: {exc}")
@@ -524,7 +543,9 @@ class WheelDetectionService:
         )
         self.reader_fail_threshold = max(1, int((self.config or {}).get("reader_fail_threshold", 5)))
         self.reader_reconnect_delay = max(0.2, float((self.config or {}).get("reader_reconnect_delay", 2.0)))
-        self.imgsz = max(64, int(imgsz))
+        configured_imgsz = self.settings.get("imgsz")
+        self.imgsz = max(64, int(configured_imgsz if configured_imgsz else imgsz))
+        self.core_mask = parse_core_mask(self.settings.get("core_mask"))
         self.streams = {}
         self.active_sides = []
 
@@ -563,6 +584,7 @@ class WheelDetectionService:
                 imgsz=self.imgsz,
                 conf_thresh=self.settings["conf_thresh"],
                 nms_thresh=self.settings["nms_thresh"],
+                core_mask=self.core_mask,
             )
             self.streams[side] = {
                 "reader": reader,
@@ -579,6 +601,7 @@ class WheelDetectionService:
         print(
             f"[wheel] enabled sides={','.join(self.active_sides)} "
             f"target_fps={self.settings['target_fps']:.2f} "
+            f"imgsz={self.imgsz} core_mask={self.core_mask} "
             f"bind_window={self.settings['bind_window_seconds']:.1f}s"
         )
         return True

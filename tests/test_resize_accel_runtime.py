@@ -16,11 +16,9 @@ class ResizeAccelRuntimeTests(unittest.TestCase):
         fallback = np.zeros((48, 96, 3), dtype=np.uint8)
         fake_rga = Mock(return_value=np.full((48, 96, 3), 9, dtype=np.uint8))
 
-        with (
-            patch.object(resize_accel, "_RGA_READY", True),
-            patch.object(resize_accel, "_rga_resize", fake_rga),
-            patch("cleaningcar.resize_accel.cv2.resize", return_value=fallback) as mock_resize,
-        ):
+        with patch.object(resize_accel, "_RGA_READY", True), \
+                patch.object(resize_accel, "_rga_resize", fake_rga), \
+                patch("cleaningcar.resize_accel.cv2.resize", return_value=fallback) as mock_resize:
             result = resize_accel.resize_bgr(image, (96, 48))
 
         self.assertIs(result, fallback)

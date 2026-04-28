@@ -142,7 +142,7 @@ def _decode_plate(indices: Sequence[int]) -> str:
 
 
 class DualPlateRecognizer:
-    def __init__(self, detect_model_path: str, rec_model_path: str, verbose: bool = False):
+    def __init__(self, detect_model_path: str, rec_model_path: str, verbose: bool = False, core_mask=None):
         self.verbose = bool(verbose)
         self.detector = RKNNLite(verbose=self.verbose)
         self.recognizer = RKNNLite(verbose=self.verbose)
@@ -158,9 +158,12 @@ class DualPlateRecognizer:
             raise RuntimeError(f"failed to load detect model: {detect_path}")
         if self.recognizer.load_rknn(str(rec_path)) != 0:
             raise RuntimeError(f"failed to load rec model: {rec_path}")
-        if self.detector.init_runtime() != 0:
+        init_kwargs = {}
+        if core_mask is not None:
+            init_kwargs["core_mask"] = core_mask
+        if self.detector.init_runtime(**init_kwargs) != 0:
             raise RuntimeError("failed to init detect runtime")
-        if self.recognizer.init_runtime() != 0:
+        if self.recognizer.init_runtime(**init_kwargs) != 0:
             raise RuntimeError("failed to init rec runtime")
 
     def release(self) -> None:

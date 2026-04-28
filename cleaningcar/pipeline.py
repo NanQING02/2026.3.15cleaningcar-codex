@@ -39,6 +39,7 @@ from .storage_cleanup import RetentionPolicy, RuntimeStorageCleaner
 from .text_render import draw_text
 from .tracking import VehicleTracker
 from .video_io import (
+    AsyncPerIdVideoWriter,
     _resolve_runtime_path,
     create_h264_video_writer,
     create_video_reader,
@@ -52,6 +53,19 @@ from .worker import DetectWorker
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PER_ID_VIDEO_DIR = (PROJECT_ROOT / 'video_result' / 'per_id').resolve()
+
+
+def _process_rss_kb():
+    try:
+        with open('/proc/self/status', 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1])
+    except Exception:
+        return None
+    return None
 
 
 def _normalize_track_id(value):
@@ -464,7 +478,7 @@ def process_video(path, args):
         csv_dir = os.path.dirname(csv_path)
         if csv_dir:
             os.makedirs(csv_dir, exist_ok=True)
-        csv_f = open(csv_path, 'w', newline='', encoding='utf-8')
+        csv_f = open(csv_path, 'w', newline='', encoding='utf-8', buffering=1024 * 1024)
         csv_writer = csv.writer(csv_f)
         csv_writer.writerow(['frame', 'class', 'score', 'x1', 'y1', 'x2', 'y2', 'track_id', 'text', 'raw_text'])
 
@@ -484,6 +498,9 @@ def process_video(path, args):
         except Exception:
             pass
     debug_frame_interval = max(1, int(video_cfg.get('debug_frame_interval', 30)))
+    copy_raw_frame_cache = bool(logic_cfg.get('copy_raw_frame_cache', False))
+    if args.no_draw and (debug_frame_file or debug_tracks or debug_rois or debug_water_boxes or debug_anchor_points):
+        copy_raw_frame_cache = True
 
     start = time.time()
     total_frames = 0
@@ -523,6 +540,7 @@ def process_video(path, args):
     per_id_target_height = per_id_params['height']
     per_id_output_fps = per_id_params['fps']
     per_id_record_stride = per_id_params['frame_stride']
+    per_id_video_queue_size = max(1, int(logic_cfg.get('per_id_video_queue_size', 8) or 8))
     resize_backend_label = (
         'passthrough'
         if per_id_target_width == width and per_id_target_height == height
@@ -644,10 +662,17 @@ def process_video(path, args):
                         f'[per-id-video] writer selected backend={writer_meta.get("writer_backend")} '
                         f'mode={writer_meta.get("writer_mode")} path={target_path}'
                     )
+                    if writer_meta.get("writer_mode") == "sw":
+                        print(f'[per-id-video] WARNING: software encoder fallback active path={target_path}')
                 if is_fallback_root:
                     print(f'[per-id-video] switched to local fallback directory: {root}')
                     per_id_video_dir = root
-                return writer_obj
+                return AsyncPerIdVideoWriter(
+                    writer_obj,
+                    resize_fn=resize_per_id_frame,
+                    queue_size=per_id_video_queue_size,
+                    log_interval=reader_log_interval,
+                )
 
             label = 'local fallback' if is_fallback_root else 'configured'
             print(f'[per-id-video] H.264 writer init failed ({label}), track={track_id} path={target_path}')
@@ -664,7 +689,8 @@ def process_video(path, args):
         else:
             print(
                 f'[per-id-video] target_size={per_id_target_width}x{per_id_target_height} '
-                f'fps={per_id_output_fps:.2f} stride={per_id_record_stride} resize_backend={resize_backend_label}'
+                f'fps={per_id_output_fps:.2f} stride={per_id_record_stride} '
+                f'queue={per_id_video_queue_size} resize_backend={resize_backend_label}'
             )
 
     def collect_per_id_cleanup_roots():
@@ -991,13 +1017,15 @@ def process_video(path, args):
             write_startup_heartbeat(stage='booting')
 
     core_mask = parse_core_mask(args.core_mask)
+    plate_core_mask = parse_core_mask(getattr(args, 'plate_core_mask', None))
+    print(f'[npu] main_core_mask={core_mask} plate_core_mask={plate_core_mask}')
     write_startup_heartbeat(stage='before_worker_init')
     startup_heartbeat_thread = threading.Thread(target=startup_heartbeat_loop, daemon=True)
     startup_heartbeat_thread.start()
     workers = []
     try:
         for i in range(args.workers):
-            worker = DetectWorker(i, args, core_mask, task_q, result_q, detect_mask)
+            worker = DetectWorker(i, args, core_mask, task_q, result_q, detect_mask, plate_core_mask=plate_core_mask)
             workers.append(worker)
             write_startup_heartbeat(stage=f'worker_{i}_ready')
         for w in workers:
@@ -1011,6 +1039,90 @@ def process_video(path, args):
     worker_last_frames = [0 for _ in workers]
     worker_last_infer = [0.0 for _ in workers]
     wheel_last_stats = {}
+    last_perf_snapshot = {}
+
+    def _snapshot_per_id_video_metrics():
+        stats = {
+            'enabled': bool(enable_per_id_video),
+            'active_writers': len(per_id_writers),
+            'queued': 0,
+            'queue_size_total': 0,
+            'enqueued': 0,
+            'written': 0,
+            'dropped': 0,
+            'write_errors': 0,
+            'writers': [],
+        }
+        for tid, writer in list(per_id_writers.items()):
+            snap_fn = getattr(writer, 'snapshot_stats', None)
+            if callable(snap_fn):
+                try:
+                    item = snap_fn()
+                except Exception:
+                    item = {}
+            else:
+                item = {
+                    'backend': getattr(writer, 'backend', ''),
+                    'encoder': getattr(writer, 'encoder', ''),
+                    'path': getattr(writer, 'path', ''),
+                }
+            item['track_id'] = tid
+            stats['writers'].append(item)
+            for key in ('queued', 'queue_size', 'enqueued', 'written', 'dropped', 'write_errors'):
+                try:
+                    value = int(item.get(key, 0) or 0)
+                except Exception:
+                    value = 0
+                if key == 'queue_size':
+                    stats['queue_size_total'] += value
+                else:
+                    stats[key] += value
+        return stats
+
+    def _write_metrics(status='running', perf_snapshot=None):
+        if not metrics_path:
+            return
+        payload = {
+            'timestamp': time.time(),
+            'pid': os.getpid(),
+            'status': status,
+            'launch_id': launch_id,
+            'runtime_namespace_key': runtime_namespace_key,
+            'device_id': runtime_device_id,
+            'config_path': config_path,
+            'config_name': config_name,
+            'source': str(path),
+            'source_mode': source_mode,
+            'decode': {
+                'mode': str((decode_meta or {}).get('decode_mode') or ''),
+                'backend': str((decode_meta or {}).get('decode_backend') or ''),
+                'fallback_used': bool((decode_meta or {}).get('fallback_used')),
+                'fallback_reason': str((decode_meta or {}).get('fallback_reason') or ''),
+            },
+            'frames': {
+                'total_read': total_frames,
+                'next_result': next_frame_to_write,
+                'latest_frame_idx': latest_frame_idx,
+                'dropped': dropped_frame_count,
+                'dropped_pending': len(dropped_frame_ids),
+            },
+            'queues': {
+                'task': _safe_qsize(task_q),
+                'result': _safe_qsize(result_q),
+                'pending_results': len(pending),
+            },
+            'perf': perf_snapshot or last_perf_snapshot,
+            'per_id_video': _snapshot_per_id_video_metrics(),
+            'events': event_manager.snapshot_metrics() if hasattr(event_manager, 'snapshot_metrics') else {},
+            'wheel': wheel_service.snapshot_stats() if wheel_service is not None else {},
+            'process': {
+                'rss_kb': _process_rss_kb(),
+            },
+        }
+        try:
+            write_json_atomic(metrics_path, payload)
+        except Exception:
+            pass
 
     monitor_stop = threading.Event()
     monitor_thread = None
@@ -1460,14 +1572,13 @@ def process_video(path, args):
                         if writer is not None:
                             frame_to_write = frame_out
                             if frame_to_write is not None:
-                                frame_to_write = resize_per_id_frame(frame_to_write)
                                 writer.write(frame_to_write)
                 if raw_frame_for_idx is not None:
                     latest_raw_frame = raw_frame_for_idx
                 elif frame_out is not None and latest_raw_frame is None:
-                    latest_raw_frame = frame_out.copy()
+                    latest_raw_frame = frame_out.copy() if copy_raw_frame_cache else frame_out
                 if frame_out is not None:
-                    latest_annotated_frame = frame_out.copy()
+                    latest_annotated_frame = frame_out
                 latest_frame_idx = next_frame_to_write
                 latest_capture_ts = capture_ts
                 last_result_ts = time.time()
@@ -1536,7 +1647,7 @@ def process_video(path, args):
             continue
         consecutive_fails = 0
         capture_ts = time.time()
-        latest_raw_frame = frame.copy()
+        latest_raw_frame = frame.copy() if copy_raw_frame_cache else frame
         latest_frame_idx = total_frames
         latest_capture_ts = capture_ts
         last_frame_read_ts = capture_ts
@@ -1574,6 +1685,7 @@ def process_video(path, args):
             decode_fps_window = reader_log_frames / max(elapsed_window, 1e-6)
             pipeline_frames_window = 0
             worker_msgs = []
+            worker_perf = []
             for i, w in enumerate(workers):
                 frames_delta = max(0, w.frames - worker_last_frames[i])
                 infer_delta = max(0.0, w.infer_time - worker_last_infer[i])
@@ -1589,7 +1701,14 @@ def process_video(path, args):
                     infer_ms = 0.0
                 pipeline_frames_window += frames_delta
                 worker_msgs.append(f'w{i}:{worker_fps:.2f}fps/{infer_ms:.1f}ms')
+                worker_perf.append({
+                    'idx': i,
+                    'fps': worker_fps,
+                    'infer_ms': infer_ms,
+                    'frames_delta': frames_delta,
+                })
             wheel_msgs = []
+            wheel_perf = {}
             if wheel_service is not None:
                 stats_now = wheel_service.snapshot_stats()
                 for side in ('left', 'right'):
@@ -1610,14 +1729,32 @@ def process_video(path, args):
                     wheel_msgs.append(
                         f'{side[0]}:{decode_fps:.2f}/{infer_fps:.2f}fps/{infer_ms:.1f}ms/c{center_delta}'
                     )
+                    wheel_perf[side] = {
+                        'decode_fps': decode_fps,
+                        'infer_fps': infer_fps,
+                        'infer_ms': infer_ms,
+                        'center_hits_delta': center_delta,
+                    }
                 wheel_last_stats = stats_now
             pipeline_fps_window = pipeline_frames_window / max(elapsed_window, 1e-6) if pipeline_frames_window > 0 else 0.0
+            last_perf_snapshot = {
+                'window_seconds': elapsed_window,
+                'decode_fps': decode_fps_window,
+                'pipeline_fps': pipeline_fps_window,
+                'workers': worker_perf,
+                'wheel': wheel_perf,
+                'task_queue_size': _safe_qsize(task_q),
+                'result_queue_size': _safe_qsize(result_q),
+                'pending_results': len(pending),
+                'dropped_frames_total': dropped_frame_count,
+            }
             workers_str = ', '.join(worker_msgs)
             wheel_str = f' 车轮[{", ".join(wheel_msgs)}]' if wheel_msgs else ''
             print(
                 f'[perf] 解码FPS={decode_fps_window:.2f} 管线FPS={pipeline_fps_window:.2f} '
                 f'窗口={elapsed_window:.1f}s 总帧数={total_frames} 工人[{workers_str}]{wheel_str}'
             )
+            _write_metrics(status='running', perf_snapshot=last_perf_snapshot)
             reader_log_frames = 0
             reader_log_last_time = now
         while result_q.qsize() > args.queue_size // 2:
@@ -1659,6 +1796,7 @@ def process_video(path, args):
 
     elapsed = time.time() - start
     write_heartbeat(status='stopped', force=True, extra={'elapsed_seconds': elapsed})
+    _write_metrics(status='stopped', perf_snapshot=last_perf_snapshot)
     if total_frames:
         print(f'Video {path}: frames={total_frames} elapsed={elapsed:.2f}s ({total_frames/elapsed:.2f} FPS)')
     agg_frames = sum(w.frames for w in workers)

@@ -1,8 +1,10 @@
 import os
 import subprocess
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from queue import Empty, Full, Queue
 
 import cv2
 
@@ -300,6 +302,122 @@ class GstreamerH264Writer:
                     finalized = True
             except Exception as exc:
                 print(f'[per-id-video] rename failed {self._output_path} -> {self.path}: {exc}')
+        return finalized
+
+
+class AsyncPerIdVideoWriter:
+    """Bounded async wrapper so video encoding never blocks the main result path."""
+
+    def __init__(self, writer, resize_fn=None, queue_size=8, log_interval=10.0):
+        self.writer = writer
+        self.resize_fn = resize_fn
+        self.queue_size = max(1, int(queue_size or 1))
+        self._queue = Queue(maxsize=self.queue_size)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name='per-id-video-writer', daemon=True)
+        self._released = False
+        self._lock = threading.Lock()
+        self._enqueued = 0
+        self._written = 0
+        self._dropped = 0
+        self._write_errors = 0
+        self._last_log_time = time.time()
+        self._log_interval = float(log_interval or 0.0)
+        self.path = getattr(writer, 'path', '')
+        self.backend = getattr(writer, 'backend', '')
+        self.encoder = getattr(writer, 'encoder', '')
+        self._thread.start()
+
+    def is_opened(self):
+        return bool(self.writer is not None and self.writer.is_opened())
+
+    def write(self, frame):
+        if frame is None or self._released or not self.is_opened():
+            return
+        try:
+            self._queue.put_nowait(frame)
+            with self._lock:
+                self._enqueued += 1
+            return
+        except Full:
+            pass
+
+        try:
+            self._queue.get_nowait()
+            self._queue.task_done()
+            with self._lock:
+                self._dropped += 1
+        except Empty:
+            pass
+
+        try:
+            self._queue.put_nowait(frame)
+            with self._lock:
+                self._enqueued += 1
+        except Full:
+            with self._lock:
+                self._dropped += 1
+
+    def _run(self):
+        while not self._stop.is_set() or not self._queue.empty():
+            try:
+                frame = self._queue.get(timeout=0.2)
+            except Empty:
+                continue
+            try:
+                frame_to_write = self.resize_fn(frame) if self.resize_fn is not None else frame
+                if frame_to_write is not None and self.writer is not None:
+                    self.writer.write(frame_to_write)
+                    with self._lock:
+                        self._written += 1
+                now = time.time()
+                if self._log_interval > 0 and now - self._last_log_time >= self._log_interval:
+                    stats = self.snapshot_stats()
+                    print(
+                        f'[per-id-video] async path={self.path} queued={stats["queued"]} '
+                        f'written={stats["written"]} dropped={stats["dropped"]} '
+                        f'errors={stats["write_errors"]}'
+                    )
+                    self._last_log_time = now
+            except Exception as exc:
+                with self._lock:
+                    self._write_errors += 1
+                print(f'[per-id-video] async write failed for {self.path}: {exc}')
+            finally:
+                self._queue.task_done()
+
+    def snapshot_stats(self):
+        with self._lock:
+            return {
+                'queued': self._queue.qsize(),
+                'queue_size': self.queue_size,
+                'enqueued': self._enqueued,
+                'written': self._written,
+                'dropped': self._dropped,
+                'write_errors': self._write_errors,
+                'backend': self.backend,
+                'encoder': self.encoder,
+                'path': self.path,
+            }
+
+    def release(self):
+        if self._released:
+            return False
+        self._released = True
+        self._stop.set()
+        try:
+            self._thread.join(timeout=30.0)
+        except Exception:
+            pass
+        if self._thread.is_alive():
+            print(f'[per-id-video] async writer did not drain before timeout path={self.path}')
+        finalized = False
+        if self.writer is not None:
+            try:
+                finalized = bool(self.writer.release())
+            except Exception:
+                finalized = False
+            self.writer = None
         return finalized
 
 

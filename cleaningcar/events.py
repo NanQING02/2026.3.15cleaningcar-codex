@@ -183,6 +183,8 @@ class EventManager:
                             'wash_duration,plate,vehicle,direction_code,direction_label,plate_is_guess,anchor_dwell_frames\n')
         self.uploader = uploader
         self.capture_mode = capture_mode
+        self.capture_quality = int(config.get('event_capture_quality', 85) or 85)
+        self.copy_track_last_frame = bool(self.logic.get('copy_track_last_frame', False))
         self.wheel_result_provider = wheel_result_provider
         self.lane_name = config.get('lane_name', '冲洗')
         self.default_plate_color = config.get('default_plate_color', '')
@@ -229,6 +231,15 @@ class EventManager:
         self.frame_timing = {}
         self.log_throttler = WindowedLogThrottler()
         self.latency_log_window_seconds = float(self.logic.get('latency_log_window_seconds', 10.0))
+        self._capture_base64_cache = {}
+        self._capture_metrics = {
+            'saved': 0,
+            'failed': 0,
+            'encode_seconds': 0.0,
+            'write_seconds': 0.0,
+            'base64_seconds': 0.0,
+            'read_seconds': 0.0,
+        }
 
     def record_frame_timing(self, frame_idx, capture_ts, infer_ts):
         if capture_ts is None or infer_ts is None:
@@ -315,7 +326,7 @@ class EventManager:
         st['track_frame_count'] = st.get('track_frame_count', 0) + 1
         st['last_frame_idx'] = frame_idx
         if frame is not None:
-            st['last_frame'] = frame.copy()
+            st['last_frame'] = frame.copy() if self.copy_track_last_frame else frame
         freeze_label = st.get('vehicle_cls_frozen', False)
         if vehicle_box is not None and st.get('last_vehicle_box') is not None:
             prev = st['last_vehicle_box']
@@ -1333,9 +1344,18 @@ class EventManager:
         if not capture_file.exists():
             return ''
         if self.capture_mode == 'base64':
+            cached = self._capture_base64_cache.pop(str(capture_file), None)
+            if cached:
+                return cached
             try:
+                t0 = time.perf_counter()
                 with capture_file.open('rb') as f:
-                    return base64.b64encode(f.read()).decode('utf-8')
+                    data = f.read()
+                self._capture_metrics['read_seconds'] += max(0.0, time.perf_counter() - t0)
+                t1 = time.perf_counter()
+                encoded = base64.b64encode(data).decode('utf-8')
+                self._capture_metrics['base64_seconds'] += max(0.0, time.perf_counter() - t1)
+                return encoded
             except Exception:
                 return ''
         return str(capture_file)
@@ -1359,6 +1379,7 @@ class EventManager:
     def _save_event_capture(self, event_type, track_id, frame_idx, frame):
         if frame is None:
             self._log_capture_failure(event_type, track_id, frame_idx, '', frame, error='frame is None')
+            self._capture_metrics['failed'] += 1
             return ''
         capture_file = self.capture_dir / f'{self.camera_id}_{track_id}_t{event_type}_{frame_idx}.jpg'
         capture_path = str(capture_file)
@@ -1369,20 +1390,34 @@ class EventManager:
                 frame_to_save = resize_bgr(frame, (target_w, target_h))
             else:
                 frame_to_save = frame
-            params = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
-            imwrite_ret = bool(cv2.imwrite(capture_path, frame_to_save, params))
-            if not imwrite_ret:
+            quality = min(max(int(self.capture_quality), 1), 100)
+            params = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+            encode_start = time.perf_counter()
+            ok, encoded = cv2.imencode('.jpg', frame_to_save, params)
+            self._capture_metrics['encode_seconds'] += max(0.0, time.perf_counter() - encode_start)
+            if not ok:
                 try:
                     capture_file.unlink(missing_ok=True)
                 except Exception:
                     pass
+                self._capture_metrics['failed'] += 1
                 self._log_capture_failure(event_type, track_id, frame_idx, capture_path, frame, imwrite_ret=False)
                 return ''
+            jpeg_bytes = encoded.tobytes()
+            write_start = time.perf_counter()
+            with capture_file.open('wb') as f:
+                f.write(jpeg_bytes)
+            self._capture_metrics['write_seconds'] += max(0.0, time.perf_counter() - write_start)
+            if self.capture_mode == 'base64' and self.uploader:
+                b64_start = time.perf_counter()
+                self._capture_base64_cache[capture_path] = base64.b64encode(jpeg_bytes).decode('utf-8')
+                self._capture_metrics['base64_seconds'] += max(0.0, time.perf_counter() - b64_start)
             if not capture_file.exists() or capture_file.stat().st_size <= 0:
                 try:
                     capture_file.unlink(missing_ok=True)
                 except Exception:
                     pass
+                self._capture_metrics['failed'] += 1
                 self._log_capture_failure(
                     event_type,
                     track_id,
@@ -1393,12 +1428,14 @@ class EventManager:
                     error='file missing after write',
                 )
                 return ''
+            self._capture_metrics['saved'] += 1
             return capture_path
         except Exception as exc:
             try:
                 capture_file.unlink(missing_ok=True)
             except Exception:
                 pass
+            self._capture_metrics['failed'] += 1
             self._log_capture_failure(
                 event_type,
                 track_id,
@@ -1408,6 +1445,14 @@ class EventManager:
                 error=str(exc),
             )
             return ''
+
+    def snapshot_metrics(self):
+        metrics = dict(self._capture_metrics)
+        metrics['active_tracks'] = len(self.tracks)
+        metrics['pending_events'] = sum(len(v) for v in self.pending_events.values())
+        metrics['upload_buffered'] = sum(len(v) for v in self.upload_buffer.values())
+        metrics['capture_base64_cached'] = len(self._capture_base64_cache)
+        return metrics
 
     def _build_api_payload(self, event, track_state, frame_idx):
         if not self.uploader:

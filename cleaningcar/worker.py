@@ -18,11 +18,12 @@ from .text_render import draw_text
 
 
 class DetectWorker(threading.Thread):
-    def __init__(self, idx, args, core_mask, task_q, result_q, detect_mask=None):
+    def __init__(self, idx, args, core_mask, task_q, result_q, detect_mask=None, plate_core_mask=None):
         super().__init__(daemon=True)
         self.idx = idx
         self.args = args
         self.core_mask = core_mask
+        self.plate_core_mask = plate_core_mask
         self.task_q = task_q
         self.result_q = result_q
         self.detect_mask = detect_mask
@@ -49,10 +50,11 @@ class DetectWorker(threading.Thread):
             detect_model_path=str(args.plate_detect_model),
             rec_model_path=str(args.plate_rec_model),
             verbose=False,
+            core_mask=plate_core_mask,
         )
         self.plate_infer_stride = max(1, int(getattr(args, "plate_infer_stride", 1) or 1))
         if self.idx == 0:
-            print(f"plate_infer_stride={self.plate_infer_stride}")
+            print(f"plate_infer_stride={self.plate_infer_stride} plate_core_mask={self.plate_core_mask}")
 
         self.frames = 0
         self.infer_time = 0.0

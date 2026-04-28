@@ -97,6 +97,7 @@ def apply_cli_overrides(args, config):
     logic = (config or {}).get('logic', {})
     maybe_set('plate_lock_frames', logic.get('plate_lock_frames'))
     maybe_set('plate_infer_stride', logic.get('plate_infer_stride'))
+    maybe_set('plate_core_mask', logic.get('plate_core_mask'))
     maybe_set('no_draw', logic.get('no_draw'))
 
 

@@ -96,6 +96,12 @@ class ConfigManager:
         except (TypeError, ValueError):
             target_fps = 5.0
         wheel['target_fps'] = max(0.1, target_fps)
+        wheel['core_mask'] = str(wheel.get('core_mask', '') or '').strip()
+        try:
+            wheel_imgsz = int(wheel.get('imgsz', 640))
+        except (TypeError, ValueError):
+            wheel_imgsz = 640
+        wheel['imgsz'] = max(64, wheel_imgsz)
         try:
             center_margin = float(wheel.get('center_min_margin_ratio', 0.15))
         except (TypeError, ValueError):
@@ -167,6 +173,10 @@ class ConfigManager:
         logic.setdefault('min_zone_b_dwell_frames_for_type4', 60)
         logic.setdefault('enable_per_id_video', True)
         logic.setdefault('per_id_video_dir', DEFAULT_PER_ID_VIDEO_DIR)
+        logic.setdefault('per_id_video_queue_size', 8)
+        logic.setdefault('copy_track_last_frame', False)
+        logic.setdefault('copy_raw_frame_cache', False)
+        logic.setdefault('plate_core_mask', '')
         per_id_video_dir = str(logic.get('per_id_video_dir', '') or '').strip()
         logic['per_id_video_dir'] = per_id_video_dir or DEFAULT_PER_ID_VIDEO_DIR
         logic.setdefault('enable_event_disk', False)

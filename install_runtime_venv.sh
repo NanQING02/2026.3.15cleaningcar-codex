@@ -105,15 +105,41 @@ install_system_packages() {
 }
 
 detect_system_python() {
+  local candidates=()
   if [ -x /usr/bin/python3 ]; then
-    printf '%s\n' /usr/bin/python3
-    return 0
+    candidates+=("/usr/bin/python3")
   fi
+  local cmd_python=""
   if command -v python3 >/dev/null 2>&1; then
-    command -v python3
-    return 0
+    cmd_python="$(command -v python3)"
+    candidates+=("$cmd_python")
   fi
-  echo "python3 not found" >&2
+  local ver
+  for ver in 3.8 3.9 3.10 3.11 3.12; do
+    if [ -x "/usr/bin/python${ver}" ]; then
+      candidates+=("/usr/bin/python${ver}")
+    fi
+  done
+
+  local python_bin
+  local version
+  local seen=" "
+  for python_bin in "${candidates[@]}"; do
+    [ -n "$python_bin" ] || continue
+    case "$seen" in
+      *" $python_bin "*) continue ;;
+    esac
+    seen="${seen}${python_bin} "
+    version="$("$python_bin" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+    case "$version" in
+      3.8|3.9|3.10|3.11|3.12)
+        printf '%s\n' "$python_bin"
+        return 0
+        ;;
+    esac
+  done
+
+  echo "supported python3 not found; need Python 3.8-3.12" >&2
   exit 1
 }
 
