@@ -28,6 +28,7 @@ def load_config(path):
     system = mgr.system
     video = mgr.video
     logic = mgr.logic
+    wheel = mgr.data.get('wheel', {})
     zones = mgr.zones
     shadow_cfg = logic.get('shadow_plate_pool', {})
     event_capture_dir = mgr.data.get('event_capture_dir', './captures')
@@ -44,6 +45,7 @@ def load_config(path):
         'monitor_interval': float(system.get('monitor_interval', 2.0)),
         'system': system,
         'video': video,
+        'wheel': wheel,
         'logic': logic,
         'zones': zones,
         'shadow_pool': shadow_cfg,

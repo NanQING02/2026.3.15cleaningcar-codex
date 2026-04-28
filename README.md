@@ -15,6 +15,7 @@
 - 检测模型：`models/detection/best.rknn`
 - 车牌检测模型：`models/plate/plate_detect.rknn`
 - 车牌识别/颜色模型：`models/plate/plate_rec_color.rknn`
+- 车轮旁路模型：`models/wheel/2026.4.28CRwheelfp.rknn`（仅 `wheel.enabled=true` 时使用）
 
 ## 当前对外交付入口
 
@@ -77,6 +78,7 @@
 - 单车视频：`logic.enable_per_id_video=true`
 - 检测 CSV：`video.csv=./video_result/test.csv`
 - 事件截图上报格式：`system.api.capture_mode=base64`
+- 车轮旁路：默认关闭；开启后走 `wheel.left_source/right_source`
 
 说明：
 

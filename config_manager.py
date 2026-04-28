@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 DEFAULT_PER_ID_VIDEO_DIR = 'video_result/per_id'
+DEFAULT_WHEEL_MODEL = 'models/wheel/2026.4.28CRwheelfp.rknn'
 
 
 class ConfigError(Exception):
@@ -75,6 +76,36 @@ class ConfigManager:
         except (TypeError, ValueError):
             segment_minutes = 0
         video['segment_minutes'] = max(0, segment_minutes)
+
+        wheel = self.data.setdefault('wheel', {})
+        enabled = wheel.get('enabled', False)
+        if isinstance(enabled, str):
+            wheel['enabled'] = enabled.strip().lower() in {'1', 'true', 'yes', 'on'}
+        else:
+            wheel['enabled'] = bool(enabled)
+        wheel['left_source'] = str(wheel.get('left_source', '') or '').strip()
+        wheel['right_source'] = str(wheel.get('right_source', '') or '').strip()
+        wheel['model'] = str(wheel.get('model', DEFAULT_WHEEL_MODEL) or DEFAULT_WHEEL_MODEL).strip()
+        classes = wheel.get('classes')
+        if not isinstance(classes, list) or not classes:
+            wheel['classes'] = ['0-25', '25-50', '50-75', '75-100']
+        else:
+            wheel['classes'] = [str(item).strip() for item in classes if str(item).strip()] or ['0-25', '25-50', '50-75', '75-100']
+        try:
+            target_fps = float(wheel.get('target_fps', 5))
+        except (TypeError, ValueError):
+            target_fps = 5.0
+        wheel['target_fps'] = max(0.1, target_fps)
+        try:
+            center_margin = float(wheel.get('center_min_margin_ratio', 0.15))
+        except (TypeError, ValueError):
+            center_margin = 0.15
+        wheel['center_min_margin_ratio'] = min(max(center_margin, 0.0), 0.49)
+        try:
+            bind_window = float(wheel.get('bind_window_seconds', 30))
+        except (TypeError, ValueError):
+            bind_window = 30.0
+        wheel['bind_window_seconds'] = max(1.0, bind_window)
 
         zones = self.data.setdefault('zones', {})
         zones['zone_a_detection'] = _ensure_polygon(zones.get('zone_a_detection', []))

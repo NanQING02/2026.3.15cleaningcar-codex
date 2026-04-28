@@ -47,6 +47,7 @@ from .video_io import (
     parse_core_mask,
 )
 from .vision import box_iou, get_anchor_point, point_in_box, scale_point, scale_polygon
+from .wheel import WheelDetectionService
 from .worker import DetectWorker
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -434,6 +435,26 @@ def process_video(path, args):
     capture_mode = getattr(args, 'capture_mode', 'path')
     event_manager = EventManager(config, fps, (width, height), zone_mgr, event_log_path, uploader=uploader,
                                  capture_mode=capture_mode)
+    wheel_service = None
+    candidate_wheel_service = None
+    try:
+        candidate_wheel_service = WheelDetectionService(
+            config=config,
+            base_dir=base_dir,
+            hw_decode=bool(getattr(args, 'hw_decode', False)),
+            imgsz=int(getattr(args, 'imgsz', 640) or 640),
+            image_quality=int(config.get('event_capture_quality', 85) or 85),
+        )
+        if candidate_wheel_service.start():
+            wheel_service = candidate_wheel_service
+            event_manager.wheel_result_provider = wheel_service
+    except Exception as exc:
+        try:
+            if candidate_wheel_service is not None:
+                candidate_wheel_service.stop()
+        except Exception:
+            pass
+        print(f'[wheel] sidechain init failed, continue without wheel binding: {exc}')
     if args.csv or output_dir:
         csv_path = args.csv
         if csv_path and os.path.isdir(csv_path):
@@ -989,6 +1010,7 @@ def process_video(path, args):
     finished_workers = 0
     worker_last_frames = [0 for _ in workers]
     worker_last_infer = [0.0 for _ in workers]
+    wheel_last_stats = {}
 
     monitor_stop = threading.Event()
     monitor_thread = None
@@ -1567,9 +1589,35 @@ def process_video(path, args):
                     infer_ms = 0.0
                 pipeline_frames_window += frames_delta
                 worker_msgs.append(f'w{i}:{worker_fps:.2f}fps/{infer_ms:.1f}ms')
+            wheel_msgs = []
+            if wheel_service is not None:
+                stats_now = wheel_service.snapshot_stats()
+                for side in ('left', 'right'):
+                    side_stats = stats_now.get(side)
+                    if not side_stats:
+                        continue
+                    prev_stats = wheel_last_stats.get(side, {})
+                    decode_delta = max(0, int(side_stats.get('decode_frames', 0)) - int(prev_stats.get('decode_frames', 0)))
+                    infer_delta = max(0, int(side_stats.get('infer_frames', 0)) - int(prev_stats.get('infer_frames', 0)))
+                    infer_time_delta = max(
+                        0.0,
+                        float(side_stats.get('infer_time', 0.0)) - float(prev_stats.get('infer_time', 0.0)),
+                    )
+                    center_delta = max(0, int(side_stats.get('center_hits', 0)) - int(prev_stats.get('center_hits', 0)))
+                    decode_fps = decode_delta / max(elapsed_window, 1e-6)
+                    infer_fps = infer_delta / max(elapsed_window, 1e-6)
+                    infer_ms = (infer_time_delta * 1000.0 / infer_delta) if infer_delta > 0 else 0.0
+                    wheel_msgs.append(
+                        f'{side[0]}:{decode_fps:.2f}/{infer_fps:.2f}fps/{infer_ms:.1f}ms/c{center_delta}'
+                    )
+                wheel_last_stats = stats_now
             pipeline_fps_window = pipeline_frames_window / max(elapsed_window, 1e-6) if pipeline_frames_window > 0 else 0.0
             workers_str = ', '.join(worker_msgs)
-            print(f'[perf] 解码FPS={decode_fps_window:.2f} 管线FPS={pipeline_fps_window:.2f} 窗口={elapsed_window:.1f}s 总帧数={total_frames} 工人[{workers_str}]')
+            wheel_str = f' 车轮[{", ".join(wheel_msgs)}]' if wheel_msgs else ''
+            print(
+                f'[perf] 解码FPS={decode_fps_window:.2f} 管线FPS={pipeline_fps_window:.2f} '
+                f'窗口={elapsed_window:.1f}s 总帧数={total_frames} 工人[{workers_str}]{wheel_str}'
+            )
             reader_log_frames = 0
             reader_log_last_time = now
         while result_q.qsize() > args.queue_size // 2:
@@ -1598,6 +1646,8 @@ def process_video(path, args):
 
     if csv_f:
         csv_f.close()
+    if wheel_service is not None:
+        wheel_service.stop()
     cap.release()
     monitor_stop.set()
     if monitor_thread:

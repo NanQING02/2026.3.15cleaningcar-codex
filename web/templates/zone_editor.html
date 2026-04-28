@@ -96,6 +96,16 @@
             <input v-model="form.video.source" placeholder="rtsp://... 或 /path/video.mp4" />
           </label>
           <label>
+            <input type="checkbox" v-model="form.wheel.enabled" />
+            启用左右车轮旁路检测
+          </label>
+          <label>左车轮 RTSP
+            <input v-model="form.wheel.left_source" placeholder="rtsp://left-wheel" />
+          </label>
+          <label>右车轮 RTSP
+            <input v-model="form.wheel.right_source" placeholder="rtsp://right-wheel" />
+          </label>
+          <label>
             <input type="checkbox" v-model="form.video.hw_decode" />
             启用硬件解码 (GStreamer+mpp)
           </label>
@@ -204,6 +214,24 @@
             </label>
             <label>事件截图质量
               <input type="number" min="1" max="100" v-model.number="form.event_capture_quality" />
+            </label>
+          </div>
+          <div class="subsection">
+            <h4>车轮旁路</h4>
+            <label>车轮模型路径
+              <input v-model="form.wheel.model" placeholder="models/wheel/2026.4.28CRwheelfp.rknn" />
+            </label>
+            <label>车轮分类标签（逗号分隔）
+              <input v-model="form.wheel.classes_text" placeholder="0-25,25-50,50-75,75-100" />
+            </label>
+            <label>车轮目标 FPS
+              <input type="number" min="0.1" step="0.1" v-model.number="form.wheel.target_fps" />
+            </label>
+            <label>车轮中心安全边距 (0-0.49)
+              <input type="number" min="0" max="0.49" step="0.01" v-model.number="form.wheel.center_min_margin_ratio" />
+            </label>
+            <label>车轮绑定窗口（秒）
+              <input type="number" min="1" step="1" v-model.number="form.wheel.bind_window_seconds" />
             </label>
           </div>
           <div class="subsection">
@@ -452,6 +480,17 @@
               debug_frame_quality: 80,
               segment_minutes: 60
             },
+            wheel: {
+              enabled: false,
+              left_source: '',
+              right_source: '',
+              model: 'models/wheel/2026.4.28CRwheelfp.rknn',
+              classes: ['0-25', '25-50', '50-75', '75-100'],
+              classes_text: '0-25,25-50,50-75,75-100',
+              target_fps: 5,
+              center_min_margin_ratio: 0.15,
+              bind_window_seconds: 30
+            },
             logic: {
               detection_anchor: 'bottom_center',
               zone_a_mask_enable: true,
@@ -658,9 +697,13 @@
           try {
             const targetName = this.normalizeConfigName(name);
             this.validateDeviceIdUnique(targetName, false);
+            const data = JSON.parse(JSON.stringify(this.form));
+            if (data.wheel) {
+              delete data.wheel.classes_text;
+            }
             const payload = {
               name,
-              data: this.form
+              data
             };
             const res = await fetch('/config/save_as', {
               method: 'POST',
@@ -721,6 +764,7 @@
           this.form.system = this.form.system || {};
           this.form.system.api = this.form.system.api || {};
           this.form.video = this.form.video || {};
+          this.form.wheel = this.form.wheel || {};
           this.form.logic = this.form.logic || {};
           const z = this.form.zones || {};
           z.zone_a_detection = z.zone_a_detection || [];
@@ -758,6 +802,19 @@
           this.form.video.debug_frame_max_width = this.form.video.debug_frame_max_width || 960;
           this.form.video.debug_frame_quality = this.form.video.debug_frame_quality || 80;
           this.form.video.segment_minutes = this.form.video.segment_minutes || 60;
+          this.form.wheel.enabled = !!this.form.wheel.enabled;
+          this.form.wheel.left_source = this.form.wheel.left_source || '';
+          this.form.wheel.right_source = this.form.wheel.right_source || '';
+          this.form.wheel.model = this.form.wheel.model || 'models/wheel/2026.4.28CRwheelfp.rknn';
+          this.form.wheel.classes = Array.isArray(this.form.wheel.classes) ? this.form.wheel.classes : ['0-25', '25-50', '50-75', '75-100'];
+          this.form.wheel.classes = this.form.wheel.classes.map((item) => String(item || '').trim()).filter(Boolean);
+          if (!this.form.wheel.classes.length) {
+            this.form.wheel.classes = ['0-25', '25-50', '50-75', '75-100'];
+          }
+          this.form.wheel.classes_text = this.form.wheel.classes.join(',');
+          this.form.wheel.target_fps = Number(this.form.wheel.target_fps || 5);
+          this.form.wheel.center_min_margin_ratio = Number(this.form.wheel.center_min_margin_ratio || 0.15);
+          this.form.wheel.bind_window_seconds = Number(this.form.wheel.bind_window_seconds || 30);
           this.form.logic.debug_overlay = !!this.form.logic.debug_overlay;
           this.form.logic.debug_track_state = !!(this.form.logic.debug_track_state || this.form.logic.debug_overlay);
           this.form.logic.debug_anchor_points = !!(this.form.logic.debug_anchor_points || this.form.logic.debug_overlay);
@@ -837,6 +894,11 @@
               workers: this.form.video.workers,
               core_mask: this.form.video.core_mask
             },
+            wheel: {
+              enabled: this.form.wheel.enabled,
+              left_source: this.form.wheel.left_source,
+              right_source: this.form.wheel.right_source
+            },
             logic: {
               lane_name: this.form.logic.lane_name,
               enable_per_id_video: this.form.logic.enable_per_id_video,
@@ -868,6 +930,16 @@
               debug_frame_max_width: this.form.video.debug_frame_max_width,
               debug_frame_quality: this.form.video.debug_frame_quality,
               segment_minutes: this.form.video.segment_minutes
+            },
+            wheel: {
+              model: this.form.wheel.model,
+              classes: String(this.form.wheel.classes_text || '')
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean),
+              target_fps: this.form.wheel.target_fps,
+              center_min_margin_ratio: this.form.wheel.center_min_margin_ratio,
+              bind_window_seconds: this.form.wheel.bind_window_seconds
             },
             logic: {
               detection_anchor: this.form.logic.detection_anchor,

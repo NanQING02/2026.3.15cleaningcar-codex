@@ -98,7 +98,17 @@ class EventUploader:
 
 
 class EventManager:
-    def __init__(self, config, fps, frame_size, zone_manager, event_log_path=None, uploader=None, capture_mode='path'):
+    def __init__(
+        self,
+        config,
+        fps,
+        frame_size,
+        zone_manager,
+        event_log_path=None,
+        uploader=None,
+        capture_mode='path',
+        wheel_result_provider=None,
+    ):
         self.config = config
         self.logic = config.get('logic', {})
         self.zone_mgr = zone_manager
@@ -173,6 +183,7 @@ class EventManager:
                             'wash_duration,plate,vehicle,direction_code,direction_label,plate_is_guess,anchor_dwell_frames\n')
         self.uploader = uploader
         self.capture_mode = capture_mode
+        self.wheel_result_provider = wheel_result_provider
         self.lane_name = config.get('lane_name', '冲洗')
         self.default_plate_color = config.get('default_plate_color', '')
         self.default_plate_color_conf = float(config.get('default_plate_color_conf', 0.0))
@@ -1480,6 +1491,9 @@ class EventManager:
                 payload['washStartTime'] = wash_start_time
             payload['direction'] = dir_code
             payload['directionLabel'] = dir_label
+            wheel_results = self._build_wheel_results_payload()
+            if wheel_results:
+                payload['wheelResults'] = wheel_results
         else:
             payload['lane'] = lane
             payload['plateNumber'] = plate_number
@@ -1500,6 +1514,47 @@ class EventManager:
                 payload['isAbnormal'] = True
                 payload['abnormalReason'] = '|'.join(reasons_list)
         return payload
+
+    def _build_wheel_results_payload(self):
+        provider = getattr(self, 'wheel_result_provider', None)
+        if provider is None:
+            return []
+        getter = getattr(provider, 'get_recent_results', None)
+        if not callable(getter):
+            return []
+        try:
+            items = getter(now_ts=time.time())
+        except TypeError:
+            items = getter()
+        except Exception as exc:
+            for line in self.log_throttler.record(
+                key='wheel_results.provider_error',
+                message=f'[wheel] failed to fetch wheel results: {exc}',
+                now=time.time(),
+                window_seconds=10.0,
+            ):
+                print(line)
+            return []
+
+        cleaned = {}
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            side = str(item.get('side') or '').strip().lower()
+            if side not in ('left', 'right'):
+                continue
+            capture_time = str(item.get('captureTime') or '').strip()
+            image_base64 = str(item.get('imageBase64') or '').strip()
+            class_name = str(item.get('className') or '').strip()
+            if not capture_time or not image_base64 or not class_name:
+                continue
+            cleaned[side] = {
+                'side': side,
+                'captureTime': capture_time,
+                'imageBase64': image_base64,
+                'className': class_name,
+            }
+        return [cleaned[side] for side in ('left', 'right') if side in cleaned]
 
     def _resolve_direction(self, track_state):
         state = None

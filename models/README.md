@@ -14,6 +14,10 @@
 - `plate/plate_rec_color.rknn`
   - 双模型车牌字符/颜色识别模型
 
+- `wheel/2026.4.28CRwheelfp.rknn`
+  - 左右车轮旁路检测模型
+  - 仅在 `wheel.enabled=true` 时启用
+
 ## 当前策略
 
 - 当前主链路只保留双模型车牌流程
@@ -26,3 +30,5 @@
   - 检测模型目录说明
 - `plate/README.md`
   - 车牌双模型目录说明
+- `wheel/README.md`
+  - 车轮旁路模型目录说明
