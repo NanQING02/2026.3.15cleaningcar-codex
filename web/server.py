@@ -26,10 +26,8 @@ from .helpers import (
     _debug_frame_path,
     _detection_csv_path,
     _event_log_path,
-    _events_root,
     _inference_log_dir,
     _load_config,
-    _per_id_video_root,
     _resolve_config_path,
     _read_csv_tail,
 )
@@ -215,91 +213,6 @@ def debug_frame(key: Optional[str] = None):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"无法读取调试帧: {exc}") from exc
     return Response(content=data, media_type="image/jpeg")
-
-
-@app.get("/videos/per_id")
-def list_per_id_videos(limit: int = 200, key: Optional[str] = None):
-    cfg = _load_config(key)
-    root = _per_id_video_root(cfg)
-    events_root = _events_root(cfg)
-    if not root.exists():
-        return {"videos": []}
-    try:
-        files = sorted(root.rglob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-    except Exception:
-        return {"videos": []}
-    items = []
-    limit = max(1, min(int(limit), 500))
-    for path in files[:limit]:
-        try:
-            stat = path.stat()
-        except Exception:
-            continue
-        rel = str(path.relative_to(root))
-        name = path.name
-        stem = path.stem
-        camera_id = None
-        track_id = None
-        meta = {}
-        parts = stem.rsplit("_", 1)
-        if len(parts) == 2 and parts[1].isdigit():
-            camera_id = parts[0]
-            track_id = int(parts[1])
-            key_prefix = f"{camera_id}_{track_id}"
-        else:
-            dash_parts = stem.rsplit("-", 2)
-            if len(dash_parts) == 3 and dash_parts[2].isdigit():
-                camera_id = dash_parts[0]
-                track_id = int(dash_parts[2])
-                key_prefix = f"{camera_id}_{track_id}"
-            else:
-                key_prefix = None
-        if key_prefix:
-            try:
-                cand = sorted(events_root.glob(f"{key_prefix}_t5_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-            except Exception:
-                cand = []
-            if cand:
-                try:
-                    with cand[0].open("r", encoding="utf-8") as f:
-                        event = json.load(f)
-                except Exception:
-                    event = {}
-                meta = {
-                    "plateNumber": event.get("plateNumber") or "",
-                    "captureTime": event.get("captureTime") or "",
-                    "isAbnormal": bool(event.get("isAbnormal")),
-                    "abnormalReason": event.get("abnormalReason") or "",
-                    "vehicleType": event.get("vehicleType") or "",
-                    "lane": event.get("lane") or "",
-                }
-        items.append({
-            "file": name,
-            "relativePath": rel,
-            "cameraId": camera_id,
-            "trackId": track_id,
-            "meta": meta,
-            "size": stat.st_size,
-            "modified": stat.st_mtime,
-            "session": str(path.parent.relative_to(root)) if path.parent != root else "",
-        })
-    return {"videos": items}
-
-
-@app.get("/videos/per_id/file")
-def get_per_id_video(path: str, key: Optional[str] = None):
-    cfg = _load_config(key)
-    root = _per_id_video_root(cfg)
-    target = (root / path).resolve()
-    try:
-        root_resolved = root.resolve()
-    except Exception:
-        root_resolved = root
-    if not str(target).startswith(str(root_resolved)):
-        raise HTTPException(status_code=403, detail="无效路径")
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="文件不存在")
-    return FileResponse(str(target), media_type="video/mp4", filename=target.name)
 
 
 @app.get("/config")

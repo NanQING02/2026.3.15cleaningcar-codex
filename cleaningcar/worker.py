@@ -119,6 +119,7 @@ class DetectWorker(threading.Thread):
                 det_payload = []
                 base_frame = frame
                 draw_frame = frame if self.args.no_draw else frame.copy()
+                draw_plate_boxes = bool(getattr(self.args, "draw_plate_boxes", False)) and not self.args.no_draw
 
                 for box, score, cls_id, cls_prob in zip(boxes, scores, classes, cls_probs):
                     x1, y1, x2, y2 = box.astype(int)
@@ -191,7 +192,7 @@ class DetectWorker(threading.Thread):
                     if plate_color:
                         label = f"{label} {plate_color}"
 
-                    if not self.args.no_draw:
+                    if draw_plate_boxes:
                         color = select_box_color(label_name)
                         cv2.rectangle(draw_frame, (x1, y1), (x2, y2), color, 2)
                         draw_text(

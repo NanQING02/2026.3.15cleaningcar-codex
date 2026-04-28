@@ -42,6 +42,7 @@ def parse_args():
     ap.add_argument('--csv', help='CSV path, append per detection.')
     ap.add_argument('--output_dir', help='When batch processing, auto-save mp4/csv into this directory using video stem names.')
     ap.add_argument('--no_draw', action='store_true', help='Do not draw boxes on frames.')
+    ap.add_argument('--draw_plate_boxes', action='store_true', help='Draw license plate boxes/text when drawing is enabled.')
     ap.add_argument('--monitor_interval', type=float, default=0.0, help='Seconds between resource logs (0 disables).')
     ap.add_argument('--limit', type=int, default=0, help='Optional frame limit for quick tests.')
     ap.add_argument('--plate_detect_model', default='models/plate/plate_detect.rknn',

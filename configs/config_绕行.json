@@ -135,6 +135,7 @@
     "debug_anchor_points": false,
     "debug_water_boxes": false,
     "no_draw": true,
+    "draw_plate_boxes": false,
     "anchor_offset_ratio": 0.1,
     "zone_b_anchor_min_frames": 10,
     "water_window_size": 20,

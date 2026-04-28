@@ -48,7 +48,28 @@ FP 检测模型后处理模式：
 
 - 当前只保留单车视频留存开关 `logic.enable_per_id_video`
 - 单车视频写出顺序为 `FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264`
+- Web 端不再浏览这些单车录像，但后台仍会继续保存
 - 旧的全局视频保存字段 `video.save_video`、`logic.enable_global_video` 已彻底删除，不再生效
+
+### `logic.draw_plate_boxes`
+
+- 默认 `false`，车牌框和车牌文字不绘制到输出帧
+- 只有同时未启用 `logic.no_draw` 且手动开启该项时，车牌绘制才会出现在调试帧与事件截图中
+
+### `wheel.*`
+
+- `wheel.enabled`
+  - 是否启用左右车轮 RTSP 旁路
+- `wheel.left_source` / `wheel.right_source`
+  - 左右车轮视频源
+- `wheel.target_fps`
+  - 每路节流推理频率，默认低于主链路
+- `wheel.center_min_margin_ratio`
+  - 只有轮胎框中心落在画面中央安全区内，才缓存结果
+- `wheel.bind_window_seconds`
+  - `type=5` 绑定左右车轮结果的时间窗口
+- `wheel.classes`
+  - 当前默认：`0-25`、`25-50`、`50-75`、`75-100`
 
 ### `system.startup_capture_dir` / `system.manual_capture_dir`
 
@@ -79,6 +100,9 @@ FP 检测模型后处理模式：
 ### `video.debug_frame_path`
 
 - 调试画面输出文件
+- Web 控制台里的“实时调试画面”读取的就是这里的文件
+- 当前 Web 页面不会自动轮询，需要手动点击获取
+- 调试帧会单独保存带绘制画面，不影响事件上报默认原图策略
 - 当留空或仍使用旧默认值 `/dev/shm/cleaningcar_debug.jpg` 时，运行时会自动改写到：
   - `/dev/shm/cleaningcar_runtime/<device_id>/debug.jpg`
 

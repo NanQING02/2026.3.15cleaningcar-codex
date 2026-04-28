@@ -16,6 +16,7 @@ class ZonePayload(BaseModel):
 class ConfigPayload(BaseModel):
     system: Optional[Dict[str, Any]] = None
     video: Optional[Dict[str, Any]] = None
+    wheel: Optional[Dict[str, Any]] = None
     logic: Optional[Dict[str, Any]] = None
     zones: Optional[Dict[str, Any]] = None
     event_output_dir: Optional[str] = None

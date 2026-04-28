@@ -99,6 +99,7 @@ def apply_cli_overrides(args, config):
     maybe_set('plate_infer_stride', logic.get('plate_infer_stride'))
     maybe_set('plate_core_mask', logic.get('plate_core_mask'))
     maybe_set('no_draw', logic.get('no_draw'))
+    maybe_set('draw_plate_boxes', logic.get('draw_plate_boxes'))
 
 
 def apply_class_thresholds_from_config(config):

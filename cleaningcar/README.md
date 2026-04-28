@@ -45,7 +45,9 @@
 
 - `events.py`
   - 负责事件状态机、事件 JSON、事件截图和事件上报
+  - `type=5` 会按窗口附加 `wheelResults`
   - 事件截图只有真实落盘成功才写入 `captureImage`
+  - 当前默认优先保存原图事件截图，而不是调试叠加图
 
 - `runtime_signals.py`
   - 输出心跳文件、启动标志、启动截图、手动截图
@@ -63,12 +65,19 @@
     - 检测模型推理
     - 检测后处理
     - 双模型车牌识别
-    - 叠框与叠字
+    - 基础叠框与叠字
+    - 车牌框仅在 `logic.draw_plate_boxes=true` 且未启用 `logic.no_draw` 时绘制
+
+- `wheel.py`
+  - 左右车轮 RTSP 旁路检测
+  - 低队列、丢旧帧、按 `wheel.target_fps` 节流推理
+  - 缓存左右最近有效“轮胎居中”截图，供 `type=5` 绑定
 
 - `pipeline.py`
   - 主流程总调度层
-  - 负责把读流、worker、跟踪、事件、截图、命令处理和单车视频串起来
+  - 负责把读流、worker、跟踪、事件、截图、命令处理、车轮旁路和单车视频串起来
   - 当前只保留 per-id 单车视频，不再维护全局视频保存链路
+  - 调试帧会单独从原始帧复制并绘制，不和事件截图共用一张图
 
 - `cli.py`
   - 命令行入口
@@ -100,6 +109,7 @@ flowchart TD
     D --> J["cleaningcar/monitoring.py"]
     D --> K["cleaningcar/vision.py"]
     D --> L["cleaningcar/storage_cleanup.py"]
+    D --> R["cleaningcar/wheel.py"]
 
     F --> M["cleaningcar/fp_detect.py"]
     F --> N["cleaningcar/plate_lpr.py"]
@@ -131,6 +141,8 @@ flowchart TD
 - 运行期清理已收口为默认禁用，仅保留 `storage_cleanup.py` 旧实现
 - 视频链路已收口为 FFmpeg 硬解/硬编优先，GStreamer 硬件链路次选，软件链路兜底
 - 全局视频保存残留已删除，仅保留 `logic.enable_per_id_video`
+- Web 不再浏览 per-id 单车录像，但 `pipeline.py` 仍保存单车录像文件
+- 实时调试图与事件截图已分流：调试图带绘制，事件截图默认优先原图
 - 当前主链路只保留双模型车牌流程，旧单模型 LPR 仅保留在 `future_modules/legacy_lpr/`
 
 ## 建议阅读顺序

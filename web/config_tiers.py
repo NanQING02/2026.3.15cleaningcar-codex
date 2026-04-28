@@ -72,6 +72,7 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "logic.min_zone_a_dwell_frames_for_type5", "tier": TIER_DEVELOPER, "group": "logic", "label": "Type5 最小停留"},
     {"path": "logic.min_track_frames_for_type1", "tier": TIER_DEVELOPER, "group": "logic", "label": "Type1 最小帧数"},
     {"path": "logic.no_draw", "tier": TIER_DEVELOPER, "group": "logic", "label": "禁用绘制"},
+    {"path": "logic.draw_plate_boxes", "tier": TIER_DEVELOPER, "group": "logic", "label": "绘制车牌框"},
     {"path": "logic.require_vehicle_type_for_events", "tier": TIER_DEVELOPER, "group": "logic", "label": "车类型锁定后触发"},
     {"path": "logic.vehicle_shrink_ratio", "tier": TIER_DEVELOPER, "group": "logic", "label": "车辆收缩比"},
     {"path": "logic.vehicle_lock_min_votes", "tier": TIER_DEVELOPER, "group": "logic", "label": "车型锁定票数"},

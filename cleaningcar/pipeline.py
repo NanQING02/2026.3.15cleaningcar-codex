@@ -488,6 +488,9 @@ def process_video(path, args):
     debug_water_boxes = bool(logic_cfg.get('debug_water_boxes', False) or debug_overlay_flag)
     debug_rois = getattr(args, 'debug_rois', False) or debug_overlay_flag
     debug_tracks = getattr(args, 'debug_tracks', False) or debug_tracks_cfg or debug_overlay_flag
+    draw_plate_boxes = bool(getattr(args, 'draw_plate_boxes', False) or logic_cfg.get('draw_plate_boxes', False))
+    setattr(args, 'draw_plate_boxes', draw_plate_boxes)
+    event_use_annotated_frame = bool(not args.no_draw and (draw_plate_boxes or debug_water_boxes))
 
     if debug_frame_file:
         debug_frame_file = Path(debug_frame_file)
@@ -501,6 +504,8 @@ def process_video(path, args):
     copy_raw_frame_cache = bool(logic_cfg.get('copy_raw_frame_cache', False))
     if args.no_draw and (debug_frame_file or debug_tracks or debug_rois or debug_water_boxes or debug_anchor_points):
         copy_raw_frame_cache = True
+    debug_frame_max_width = max(0, int(video_cfg.get('debug_frame_max_width', 960) or 0))
+    debug_frame_quality = min(max(int(video_cfg.get('debug_frame_quality', 80) or 80), 1), 100)
 
     start = time.time()
     total_frames = 0
@@ -1194,6 +1199,169 @@ def process_video(path, args):
                     cv2.putText(frame_img, f'A{track_id}', (ax + 4, ay - 4),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
+    def draw_debug_detections(frame_img, det_items):
+        if frame_img is None:
+            return
+        for det in det_items or []:
+            box = det.get('box')
+            if not box or len(box) != 4:
+                continue
+            try:
+                cls_id = int(det.get('cls', -1))
+                x1, y1, x2, y2 = [int(round(v)) for v in box]
+            except Exception:
+                continue
+            if cls_id < 0 or cls_id >= len(CLASS_NAMES):
+                continue
+            label_name = str(det.get('label') or CLASS_NAMES[cls_id])
+            color = select_box_color(label_name)
+            label = label_name
+            track_id = _normalize_track_id(det.get('track_id'))
+            if cls_id in VEHICLE_CLASS_IDS:
+                locked = event_manager.get_locked_vehicle(track_id) if track_id else ''
+                label = localize_vehicle(locked or label_name)
+                if track_id:
+                    label = f"ID:{track_id} {label}"
+            elif cls_id == LICENSE_CLASS:
+                if not draw_plate_boxes:
+                    continue
+                plate_text = str(det.get('text') or '').strip()
+                label = plate_text or 'license'
+            elif cls_id in WATER_CLASS_IDS:
+                label = localize_cleaning(label_name)
+            try:
+                score = det.get('score')
+                if score is not None:
+                    label = f"{label} {float(score):.2f}"
+            except Exception:
+                pass
+            cv2.rectangle(frame_img, (x1, y1), (x2, y2), color, 2)
+            draw_text(
+                frame_img,
+                label,
+                (x1, max(0, y1 - 12)),
+                font_scale=0.65,
+                color=(255, 255, 255),
+                thickness=2,
+                anchor='lb',
+            )
+            if cls_id == LICENSE_CLASS:
+                for pt in det.get('landmarks', []) or []:
+                    if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+                        continue
+                    cv2.circle(
+                        frame_img,
+                        (int(round(pt[0])), int(round(pt[1]))),
+                        3,
+                        (0, 255, 255),
+                        -1,
+                    )
+            if debug_anchor_points and cls_id in VEHICLE_CLASS_IDS:
+                anchor_pt = anchor_point_for([x1, y1, x2, y2])
+                if anchor_pt:
+                    ax, ay = int(anchor_pt[0]), int(anchor_pt[1])
+                    cv2.circle(frame_img, (ax, ay), 4, (255, 140, 0), -1)
+                    if track_id:
+                        cv2.putText(
+                            frame_img,
+                            f'A{track_id}',
+                            (ax + 4, ay - 4),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.45,
+                            (255, 255, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
+
+    def draw_debug_track_state(frame_img, vehicle_refs):
+        if not debug_tracks or frame_img is None:
+            return
+        for det_ref in vehicle_refs or []:
+            car_id = det_ref.get('track_id', -1)
+            if car_id <= 0:
+                continue
+            info = event_manager.get_track_debug(car_id)
+            if not info:
+                continue
+            x1, y1, _, _ = det_ref['box']
+            text = (f"ID:{car_id} {info['state']} sf:{info['stationary']} "
+                    f"spd:{info['speed']:.1f} water:{'Y' if info['water'] else 'N'} "
+                    f"dur:{info['wash_duration']:.1f} zb:{info.get('zone_b_elapsed',0)}")
+            cv2.putText(frame_img, text, (x1, max(0, y1 - 25)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1, cv2.LINE_AA)
+
+    def draw_debug_rois(frame_img):
+        if not debug_rois or frame_img is None:
+            return
+        if len(zone_a_pts) >= 3:
+            roi_np = np.array(zone_a_pts, dtype=np.int32)
+            cv2.polylines(frame_img, [roi_np], True, (0, 200, 0), 2, cv2.LINE_AA)
+            anchor = tuple(map(int, roi_np[0]))
+            cv2.putText(frame_img, 'Zone A', (anchor[0], max(0, anchor[1] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 2, cv2.LINE_AA)
+        if len(zone_b_pts) >= 3:
+            roi_np = np.array(zone_b_pts, dtype=np.int32)
+            cv2.polylines(frame_img, [roi_np], True, (0, 0, 255), 2, cv2.LINE_AA)
+            anchor = tuple(map(int, roi_np[0]))
+            cv2.putText(frame_img, 'Zone B', (anchor[0], max(0, anchor[1] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+        flow_start_int = tuple(map(int, flow_start))
+        flow_end_int = tuple(map(int, flow_end))
+        cv2.arrowedLine(frame_img, flow_start_int, flow_end_int, (255, 0, 0), 2, tipLength=0.08)
+
+    def save_debug_frame(frame_img, det_items, vehicle_refs, frame_capture_ts):
+        if not debug_frame_file or frame_img is None:
+            return
+        try:
+            debug_frame = frame_img.copy()
+            draw_debug_detections(debug_frame, det_items)
+            draw_debug_track_state(debug_frame, vehicle_refs)
+            draw_debug_rois(debug_frame)
+            ts_now = datetime.now()
+            ts_str = ts_now.strftime("%Y-%m-%d %H:%M:%S")
+            latency_ms = None
+            if frame_capture_ts is not None:
+                try:
+                    latency_ms = int((ts_now.timestamp() - float(frame_capture_ts)) * 1000.0)
+                except Exception:
+                    latency_ms = None
+            text = ts_str
+            if latency_ms is not None and latency_ms >= 0:
+                text = f"{ts_str} Δ{latency_ms}ms"
+            h_dbg, w_dbg = debug_frame.shape[:2]
+            margin = 10
+            base = min(w_dbg, h_dbg)
+            scale = max(0.5, base / 960.0 * 0.7)
+            thick_outline = max(2, int(scale * 3))
+            thick_text = max(1, int(scale * 1.5))
+            cv2.putText(
+                debug_frame,
+                text,
+                (margin, h_dbg - margin),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                scale,
+                (0, 0, 0),
+                thick_outline,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                debug_frame,
+                text,
+                (margin, h_dbg - margin),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                scale,
+                (255, 255, 255),
+                thick_text,
+                cv2.LINE_AA,
+            )
+            if debug_frame_max_width > 0 and debug_frame.shape[1] > debug_frame_max_width:
+                ratio = debug_frame_max_width / float(debug_frame.shape[1])
+                target_h = max(1, int(round(debug_frame.shape[0] * ratio)))
+                debug_frame = resize_bgr(debug_frame, (debug_frame_max_width, target_h))
+            cv2.imwrite(str(debug_frame_file), debug_frame, [int(cv2.IMWRITE_JPEG_QUALITY), debug_frame_quality])
+        except Exception:
+            pass
+
     def drain_results(block=True):
         nonlocal next_frame_to_write, finished_workers, car_plate_cache, plate_binding_states, per_id_writers
         nonlocal enable_per_id_video, latest_raw_frame, latest_annotated_frame, dropped_frame_ids
@@ -1243,6 +1411,11 @@ def process_video(path, args):
                         cv2.rectangle(frame_out, (wx1, wy1), (wx2, wy2), CLASS_COLORS.get('water', (0, 160, 255)), 2)
                         cv2.putText(frame_out, 'Water', (wx1, max(0, wy1 - 6)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 160, 255), 1, cv2.LINE_AA)
+                event_frame_for_idx = (
+                    frame_out
+                    if event_use_annotated_frame and frame_out is not None
+                    else (raw_frame_for_idx if raw_frame_for_idx is not None else frame_out)
+                )
                 assignments = vehicle_tracker.update(next_frame_to_write, vehicle_dets) if vehicle_dets else []
                 for det_ref, track_id in zip(vehicle_payload_refs, assignments):
                     det_ref['track_id'] = track_id
@@ -1349,7 +1522,7 @@ def process_video(path, args):
                         vehicle_box,
                         info.get('text', ''),
                         next_frame_to_write,
-                        frame_out,
+                        event_frame_for_idx,
                         water_boxes,
                         bool(water_boxes),
                         is_plate=True,
@@ -1388,7 +1561,7 @@ def process_video(path, args):
                                 det_ref['box'],
                                 '',
                                 next_frame_to_write,
-                                frame_out,
+                                event_frame_for_idx,
                                 water_boxes,
                                 bool(water_boxes),
                                 is_plate=True,
@@ -1420,7 +1593,7 @@ def process_video(path, args):
                             det_ref['box'],
                             '',
                             next_frame_to_write,
-                            frame_out,
+                            event_frame_for_idx,
                             water_boxes,
                             bool(water_boxes),
                             is_plate=True,
@@ -1445,7 +1618,7 @@ def process_video(path, args):
                         det_ref['box'],
                         '',
                         next_frame_to_write,
-                        frame_out,
+                        event_frame_for_idx,
                         water_boxes,
                         bool(water_boxes),
                         is_plate=False,
@@ -1488,48 +1661,9 @@ def process_video(path, args):
                     flow_start_int = tuple(map(int, flow_start))
                     flow_end_int = tuple(map(int, flow_end))
                     cv2.arrowedLine(frame_out, flow_start_int, flow_end_int, (255, 0, 0), 2, tipLength=0.08)
-                if debug_frame_file and frame_out is not None and (next_frame_to_write % debug_frame_interval == 0):
-                    try:
-                        ts_now = datetime.now()
-                        ts_str = ts_now.strftime("%Y-%m-%d %H:%M:%S")
-                        latency_ms = None
-                        if capture_ts is not None:
-                            try:
-                                latency_ms = int((ts_now.timestamp() - float(capture_ts)) * 1000.0)
-                            except Exception:
-                                latency_ms = None
-                        text = ts_str
-                        if latency_ms is not None and latency_ms >= 0:
-                            text = f"{ts_str} Δ{latency_ms}ms"
-                        h_dbg, w_dbg = frame_out.shape[:2]
-                        margin = 10
-                        base = min(w_dbg, h_dbg)
-                        scale = max(0.5, base / 960.0 * 0.7)
-                        thick_outline = max(2, int(scale * 3))
-                        thick_text = max(1, int(scale * 1.5))
-                        cv2.putText(
-                            frame_out,
-                            text,
-                            (margin, h_dbg - margin),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            scale,
-                            (0, 0, 0),
-                            thick_outline,
-                            cv2.LINE_AA,
-                        )
-                        cv2.putText(
-                            frame_out,
-                            text,
-                            (margin, h_dbg - margin),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            scale,
-                            (255, 255, 255),
-                            thick_text,
-                            cv2.LINE_AA,
-                        )
-                        cv2.imwrite(str(debug_frame_file), frame_out)
-                    except Exception:
-                        pass
+                debug_frame_source = raw_frame_for_idx if raw_frame_for_idx is not None else frame_out
+                if debug_frame_source is not None and (next_frame_to_write % debug_frame_interval == 0):
+                    save_debug_frame(debug_frame_source, det_payload, vehicle_payload_refs, capture_ts)
                 if enable_per_id_video and frame_out is not None:
                     for tid, st in event_manager.tracks.items():
                         start_f = st.get('record_start_frame')

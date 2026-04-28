@@ -59,23 +59,6 @@ def _debug_frame_path(cfg: ConfigManager) -> Optional[Path]:
     return Path(dbg_path)
 
 
-def _per_id_video_root(cfg: ConfigManager) -> Path:
-    logic = cfg.data.get("logic", {}) or {}
-    base_dir = logic.get("per_id_video_dir") or cfg.data.get("per_id_video_dir")
-    if isinstance(base_dir, str):
-        base_dir = base_dir.strip()
-    base = _resolve_path(base_dir or (state.ROOT / "video_result" / "per_id"))
-    return base
-
-
-def _events_root(cfg: ConfigManager) -> Path:
-    base_dir = cfg.data.get("event_output_dir")
-    if not base_dir:
-        base_dir = cfg.data.get("system", {}).get("event_output_dir")
-    base = _resolve_path(base_dir or (state.ROOT / "events"))
-    return base
-
-
 def _read_csv_tail(path: Path, limit: int):
     if not path.exists():
         return []

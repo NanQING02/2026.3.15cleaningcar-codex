@@ -4,6 +4,7 @@
 
 - FP 检测主链路
 - 双模型车牌识别主链路
+- 左右车轮 RTSP 旁路检测
 - 事件 JSON、事件截图、启动截图、手动截图
 - 单车视频输出
 - Web 管理与 guardian 守护
@@ -57,12 +58,16 @@
 ## 当前运行口径
 
 - 当前只保留双模型车牌链路，旧单模型 LPR 不再参与主链路
+- 车轮旁路独立于主相机冲洗检测运行，只在 `wheel.enabled=true` 时启用
+- 主事件只有 `type=5` 会附加 `wheelResults`，并只绑定最近窗口内左右各一条有效车轮结果
 - `video.fp_output_mode` 支持 `6` 和 `9` 两种后处理模式，默认 `6`
 - 当 `video.hw_decode=true` 时，读流顺序为：`FFmpeg 硬解 -> GStreamer+mpp 硬解 -> 软件解码`
 - 单车视频写出顺序为：`FFmpeg 硬编 -> GStreamer 硬编 -> FFmpeg libx264`
 - 本地文件视频默认只跑一遍，读到 EOF 后退出；只有手动勾选自动重启才会循环
 - `logic.per_id_video_dir` 留空、空白或不可写时，统一回退到 `video_result/per_id/`
 - 全局视频保存功能已彻底删除，当前只保留 `logic.enable_per_id_video`
+- Web 端不再提供按车辆 ID 的单车录像浏览，但后台仍按 `logic.enable_per_id_video` 保存单车录像
+- 事件/API 截图默认优先原图；实时调试帧单独输出带绘制画面
 - 运行产物清理当前默认禁用，旧实现仅保留在代码中备用
 
 ## 当前默认配置快照
@@ -73,6 +78,7 @@
 - 解码：`video.hw_decode=true`
 - 推理并发：`video.workers=2`，`video.core_mask=0-1`
 - 画面叠加：`logic.no_draw=true`
+- 车牌框绘制：`logic.draw_plate_boxes=false`
 - 调试帧：`video.debug_frame_path=off`
 - 车牌副链路降频：`logic.plate_infer_stride=2`
 - 单车视频：`logic.enable_per_id_video=true`
@@ -85,6 +91,7 @@
 - 上述只是当前仓库默认值，运行时仍以实际配置文件和 Web 保存结果为准
 - 若板端缺少 `ffmpeg rkmpp`，程序会先退到 `GStreamer+mpp`；若 `mppvideodec` 也不可用，再退到软件解码
 - 涉及性能、正确性和旁路开销时，优先同时对照 `configs/config.json` 与 `cleaningcar/pipeline.py`
+- 若启用了 `video.debug_frame_path`，Web 的“实时调试画面”是点击获取，不自动轮询；调试图会带绘制结果
 
 ## 主链路速览
 
@@ -197,6 +204,7 @@ python run_zone_detect.py --config configs/config.json --fp_output_mode 9
 - 板端部署时必须一并带上 `fonts/platech.ttf`
 - `requirements.txt` 已包含 `Pillow`
 - `captureImage` 现在只代表“截图文件真实存在”
+- `captureImage` 对外上报时默认优先原图；调试叠加主要看 `debug_frame_path`
 - 手工停 Web 请使用 `./start_web_server.sh stop`
 - 若甲方自行配置 `systemd`，人工停服务请使用 `systemctl stop cleaningcar-web`
 - 当前不对外开放清理策略配置项；`storage_cleanup.py` 仍保留旧实现，但运行期默认禁用

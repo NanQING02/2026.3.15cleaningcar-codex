@@ -152,6 +152,7 @@ class ConfigManager:
         logic.setdefault('min_zone_a_dwell_frames_for_type5', 25)
         logic.setdefault('min_track_frames_for_type1', 5)
         logic.setdefault('no_draw', False)
+        logic.setdefault('draw_plate_boxes', False)
         logic.setdefault('require_vehicle_type_for_events', False)
         logic.setdefault('lane_name', '冲洗')
         logic.setdefault('vehicle_shrink_ratio', 0.35)
