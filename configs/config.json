@@ -8,7 +8,16 @@
     },
     "monitor_interval": 10,
     "metrics_path": "/dev/shm/metrics_laneA.json",
-    "cpu_mask": ""
+    "cpu_mask": "",
+    "command_dir": "/dev/shm/cleaningcar_cmd",
+    "startup_flag_path": "/dev/shm/cleaningcar_started.flag",
+    "heartbeat_path": "/dev/shm/cleaningcar_heartbeat.json",
+    "heartbeat_interval_seconds": 1,
+    "heartbeat_timeout_seconds": 30,
+    "progress_timeout_seconds": 90,
+    "heartbeat_startup_grace_seconds": 90,
+    "startup_capture_dir": "captures/startup",
+    "manual_capture_dir": "captures/manual"
   },
   "video": {
     "source": "rtsp://admin:yanya999@192.168.1.111:8557/h264",
@@ -20,7 +29,7 @@
     "core_mask": "0-1",
     "fp_output_mode": "6",
     "csv": "./video_result/test.csv",
-    "debug_frame_path": "off",
+    "debug_frame_path": "",
     "debug_frame_interval": 30,
     "segment_minutes": 60,
     "debug_frame_max_width": 960,
@@ -37,11 +46,11 @@
       "50-75",
       "75-100"
     ],
-    "target_fps": 3,
+    "target_fps": 3.0,
     "core_mask": "",
     "imgsz": 640,
     "center_min_margin_ratio": 0.15,
-    "bind_window_seconds": 30
+    "bind_window_seconds": 30.0
   },
   "zones": {
     "zone_a_detection": [
@@ -142,13 +151,14 @@
     "require_vehicle_type_for_events": true,
     "min_zone_b_dwell_frames_for_type4": 60,
     "enable_per_id_video": true,
-    "per_id_video_dir": "video_result/per_id",
+    "per_id_video_dir": "/data/ftp/per_id",
     "per_id_video_queue_size": 8,
     "copy_track_last_frame": false,
     "copy_raw_frame_cache": false,
     "plate_core_mask": "",
     "plate_infer_stride": 2,
-    "enable_event_disk": false
+    "enable_event_disk": false,
+    "vehicle_tracker_impl": "bytetrack"
   },
   "event_output_dir": "events/config",
   "event_capture_dir": "captures/config",

@@ -67,6 +67,25 @@ class WebConfigNamespaceTests(unittest.TestCase):
         self.assertEqual(payload["system"]["device_id"], "camera-b")
         self.assertEqual(payload["logic"]["lane_name"], "B")
 
+    def test_debug_frame_meta_distinguishes_disabled_and_pending_file(self):
+        active = self.write_config("config.json", "camera-a", lane_name="A")
+        state.set_config_path(active)
+
+        cfg = server._load_config()
+        cfg.data.setdefault("video", {})["debug_frame_path"] = "off"
+        cfg.save()
+        payload = server.debug_frame_meta()
+        self.assertFalse(payload["available"])
+        self.assertFalse(payload["enabled"])
+
+        cfg = server._load_config()
+        cfg.data.setdefault("video", {})["debug_frame_path"] = ""
+        cfg.save()
+        payload = server.debug_frame_meta()
+        self.assertFalse(payload["available"])
+        self.assertTrue(payload["enabled"])
+        self.assertIn("/dev/shm/cleaningcar_runtime/camera-a/debug.jpg", payload["path"])
+
     def test_zone_editor_hides_legacy_cleanup_and_global_video_controls(self):
         template_path = Path(__file__).resolve().parent.parent / "web" / "templates" / "zone_editor.html"
         text = template_path.read_text(encoding="utf-8")

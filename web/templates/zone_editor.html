@@ -1255,7 +1255,12 @@
             const data = await res.json();
             if (!data.available) {
               this.debugImageUrl = '';
-              this.debugFrameStatus = '尚无调试帧，请先在配置里设置 debug_frame_path';
+              if (data.enabled === false) {
+                this.debugFrameStatus = '调试帧已禁用；清空 debug_frame_path 可恢复为默认 /dev/shm 运行时路径';
+              } else {
+                const resolvedPath = data.path || '默认运行时路径';
+                this.debugFrameStatus = `尚无调试帧，请确认推理已运行并等待输出：${resolvedPath}`;
+              }
               return;
             }
             const updated = data.updated ? new Date(data.updated * 1000) : new Date();

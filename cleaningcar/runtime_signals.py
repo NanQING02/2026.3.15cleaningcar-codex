@@ -61,7 +61,10 @@ def _resolve_optional_debug_frame_path(
         configured_text = DEFAULT_DEBUG_FRAME_PATH
     else:
         configured_text = str(configured_value or "").strip()
-    if configured_text.lower() in ("", "0", "false", "none", "null", "off", "disable", "disabled"):
+    # Empty means "use the namespaced default debug frame path".
+    if not configured_text:
+        return namespaced_default
+    if configured_text.lower() in ("0", "false", "none", "null", "off", "disable", "disabled"):
         return None
     return _resolve_namespaced_runtime_path(
         configured_text,

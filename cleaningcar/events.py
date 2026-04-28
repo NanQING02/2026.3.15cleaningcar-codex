@@ -815,6 +815,7 @@ class EventManager:
                     video_duration = 0.0
             event['videoDuration'] = video_duration
             event['cleanliness'] = self.default_cleanliness
+            self._attach_wheel_results(event)
         if track_state.get('wash_start_time') and not event.get('washStartTime'):
             event['washStartTime'] = track_state.get('wash_start_time')
         capture_ts_val = None
@@ -1536,9 +1537,7 @@ class EventManager:
                 payload['washStartTime'] = wash_start_time
             payload['direction'] = dir_code
             payload['directionLabel'] = dir_label
-            wheel_results = self._build_wheel_results_payload()
-            if wheel_results:
-                payload['wheelResults'] = wheel_results
+            self._attach_wheel_results(payload)
         else:
             payload['lane'] = lane
             payload['plateNumber'] = plate_number
@@ -1558,6 +1557,14 @@ class EventManager:
             if reasons_list:
                 payload['isAbnormal'] = True
                 payload['abnormalReason'] = '|'.join(reasons_list)
+        return payload
+
+    def _attach_wheel_results(self, payload):
+        if not isinstance(payload, dict):
+            return payload
+        wheel_results = self._build_wheel_results_payload()
+        if wheel_results:
+            payload['wheelResults'] = wheel_results
         return payload
 
     def _build_wheel_results_payload(self):

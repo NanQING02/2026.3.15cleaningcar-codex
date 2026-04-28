@@ -144,6 +144,47 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(payload["wheelResults"][0]["side"], "left")
         self.assertEqual(payload["wheelResults"][0]["className"], "50-75")
 
+    def test_type5_local_event_json_also_attaches_wheel_results(self):
+        cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
+        frame = np.full((80, 80, 3), 120, dtype=np.uint8)
+        now_ts = time.time()
+        cache.update_from_detections(
+            side="left",
+            frame=frame,
+            capture_ts=now_ts,
+            boxes=np.array([[28.0, 28.0, 52.0, 52.0]], dtype=np.float32),
+            classes=np.array([2], dtype=np.int64),
+            scores=np.array([0.88], dtype=np.float32),
+            center_min_margin_ratio=0.15,
+            class_names=["0-25", "25-50", "50-75", "75-100"],
+        )
+
+        manager = self._manager(wheel_provider=cache)
+        track_state = self._track_state()
+        track_state["type1_capture_time"] = "2026-04-28 11:59:47"
+        manager._emit_event_core(
+            track_id=1,
+            event_type=5,
+            frame_idx=30,
+            frame=frame,
+            payload={"captureTime": "2026-04-28 12:00:00", "washDuration": 7.3},
+            track_state=track_state,
+            vehicle_type="car",
+        )
+
+        saved = sorted(Path(manager.events_dir).glob("*_t5_*.json"))
+        self.assertEqual(len(saved), 1)
+        event = json.load(saved[0].open("r", encoding="utf-8"))
+
+        self.assertIn("wheelResults", event)
+        self.assertEqual(len(event["wheelResults"]), 1)
+        self.assertEqual(
+            set(event["wheelResults"][0].keys()),
+            {"side", "captureTime", "imageBase64", "className"},
+        )
+        self.assertEqual(event["wheelResults"][0]["side"], "left")
+        self.assertEqual(event["wheelResults"][0]["className"], "50-75")
+
     def test_type5_payload_omits_wheel_results_when_provider_absent(self):
         manager = self._manager(wheel_provider=None)
 

@@ -193,21 +193,25 @@ def reload_frame(key: Optional[str] = None):
 def debug_frame_meta(key: Optional[str] = None):
     cfg = _load_config(key)
     path = _debug_frame_path(cfg)
-    if not path or not path.exists():
-        return {"available": False}
+    if not path:
+        return {"available": False, "enabled": False, "path": ""}
+    if not path.exists():
+        return {"available": False, "enabled": True, "path": str(path)}
     try:
         stat = path.stat()
-        return {"available": True, "path": str(path), "updated": stat.st_mtime}
+        return {"available": True, "enabled": True, "path": str(path), "updated": stat.st_mtime}
     except Exception:
-        return {"available": True, "path": str(path), "updated": 0}
+        return {"available": True, "enabled": True, "path": str(path), "updated": 0}
 
 
 @app.get("/debug_frame")
 def debug_frame(key: Optional[str] = None):
     cfg = _load_config(key)
     path = _debug_frame_path(cfg)
-    if not path or not path.exists():
-        raise HTTPException(status_code=404, detail="调试帧不存在，请先在配置里启用 debug_frame_path。")
+    if not path:
+        raise HTTPException(status_code=404, detail="调试帧已禁用，请设置 debug_frame_path。")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"调试帧尚未生成，请确认推理已运行并等待输出：{path}")
     try:
         data = path.read_bytes()
     except Exception as exc:
