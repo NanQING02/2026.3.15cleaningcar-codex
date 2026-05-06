@@ -1562,12 +1562,23 @@ class EventManager:
     def _attach_wheel_results(self, payload):
         if not isinstance(payload, dict):
             return payload
-        wheel_results = self._build_wheel_results_payload()
+        reference_ts = self._parse_capture_time_to_ts(payload.get('captureTime'))
+        wheel_results = self._build_wheel_results_payload(reference_ts=reference_ts)
         if wheel_results:
             payload['wheelResults'] = wheel_results
         return payload
 
-    def _build_wheel_results_payload(self):
+    @staticmethod
+    def _parse_capture_time_to_ts(value):
+        text = str(value or '').strip()
+        if not text:
+            return None
+        try:
+            return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            return None
+
+    def _build_wheel_results_payload(self, reference_ts=None):
         provider = getattr(self, 'wheel_result_provider', None)
         if provider is None:
             return []
@@ -1575,9 +1586,12 @@ class EventManager:
         if not callable(getter):
             return []
         try:
-            items = getter(now_ts=time.time())
+            items = getter(now_ts=time.time(), reference_ts=reference_ts)
         except TypeError:
-            items = getter()
+            try:
+                items = getter(now_ts=time.time())
+            except TypeError:
+                items = getter()
         except Exception as exc:
             for line in self.log_throttler.record(
                 key='wheel_results.provider_error',

@@ -103,9 +103,9 @@ class ConfigManager:
             wheel_imgsz = 640
         wheel['imgsz'] = max(64, wheel_imgsz)
         try:
-            center_margin = float(wheel.get('center_min_margin_ratio', 0.15))
+            center_margin = float(wheel.get('center_min_margin_ratio', 0.25))
         except (TypeError, ValueError):
-            center_margin = 0.15
+            center_margin = 0.25
         wheel['center_min_margin_ratio'] = min(max(center_margin, 0.0), 0.49)
         try:
             bind_window = float(wheel.get('bind_window_seconds', 30))

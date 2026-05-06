@@ -18,6 +18,7 @@ from .video_io import create_video_reader, parse_core_mask
 DEFAULT_WHEEL_CLASSES = ["0-25", "25-50", "50-75", "75-100"]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WHEEL_MODEL_PATH = (PROJECT_ROOT / "models" / "wheel" / "2026.4.28CRwheelfp.rknn").resolve()
+DEFAULT_CENTER_MIN_MARGIN_RATIO = 0.25
 WHEEL_SIDES = ("left", "right")
 
 
@@ -84,7 +85,10 @@ def resolve_wheel_settings(config, base_dir=None):
     if target_fps <= 0.0:
         target_fps = 5.0
 
-    center_min_margin_ratio = _safe_float(raw.get("center_min_margin_ratio", 0.15), 0.15)
+    center_min_margin_ratio = _safe_float(
+        raw.get("center_min_margin_ratio", DEFAULT_CENTER_MIN_MARGIN_RATIO),
+        DEFAULT_CENTER_MIN_MARGIN_RATIO,
+    )
     center_min_margin_ratio = min(max(center_min_margin_ratio, 0.0), 0.49)
 
     bind_window_seconds = _safe_float(raw.get("bind_window_seconds", 30.0), 30.0)
@@ -127,7 +131,7 @@ def select_centered_detection(
     classes,
     scores,
     frame_shape,
-    center_min_margin_ratio=0.15,
+    center_min_margin_ratio=DEFAULT_CENTER_MIN_MARGIN_RATIO,
     class_names=None,
 ):
     if boxes is None or classes is None or scores is None:
@@ -174,6 +178,8 @@ def select_centered_detection(
             "classId": int(cls_id),
             "score": float(score),
             "className": resolve_wheel_class_name(class_names, cls_id),
+            "centerDistance": float(distance),
+            "centerPoint": [float(center_x), float(center_y)],
         }
     return best_item
 
@@ -198,8 +204,20 @@ class WheelResultCache:
     def __init__(self, bind_window_seconds=30.0, image_quality=85):
         self.bind_window_seconds = max(1.0, float(bind_window_seconds))
         self.image_quality = int(min(max(int(image_quality), 1), 100))
-        self._entries: Dict[str, Dict[str, object]] = {}
+        self._entries: Dict[str, list] = {}
         self._lock = threading.Lock()
+
+    def _prune_entries(self, side, cutoff_ts):
+        entries = list(self._entries.get(side) or [])
+        if not entries:
+            self._entries.pop(side, None)
+            return []
+        kept = [entry for entry in entries if float(entry.get("capture_ts", 0.0) or 0.0) >= cutoff_ts]
+        if kept:
+            self._entries[side] = kept
+        else:
+            self._entries.pop(side, None)
+        return kept
 
     def update_from_detections(
         self,
@@ -209,7 +227,7 @@ class WheelResultCache:
         boxes,
         classes,
         scores,
-        center_min_margin_ratio=0.15,
+        center_min_margin_ratio=DEFAULT_CENTER_MIN_MARGIN_RATIO,
         class_names=None,
     ):
         side = str(side or "").strip().lower()
@@ -236,25 +254,43 @@ class WheelResultCache:
             "captureTime": datetime.fromtimestamp(capture_ts).strftime("%Y-%m-%d %H:%M:%S"),
             "imageJpegBytes": image_jpeg,
             "className": candidate["className"],
+            "score": float(candidate.get("score", 0.0) or 0.0),
+            "centerDistance": float(candidate.get("centerDistance", 0.0) or 0.0),
+            "centerPoint": list(candidate.get("centerPoint") or []),
             "capture_ts": capture_ts,
         }
         with self._lock:
-            self._entries[side] = entry
+            cutoff_ts = capture_ts - self.bind_window_seconds
+            entries = self._prune_entries(side, cutoff_ts)
+            entries.append(entry)
+            self._entries[side] = entries
         return True
 
-    def get_recent_results(self, now_ts=None):
-        ref_ts = time.time() if now_ts is None else float(now_ts)
+    def get_recent_results(self, now_ts=None, reference_ts=None):
+        now_ref_ts = time.time() if now_ts is None else float(now_ts)
+        match_ref_ts = now_ref_ts if reference_ts is None else float(reference_ts)
         results = []
-        stale_sides = []
         with self._lock:
             for side in WHEEL_SIDES:
-                entry = self._entries.get(side)
-                if not entry:
+                entries = self._prune_entries(side, now_ref_ts - self.bind_window_seconds)
+                if not entries:
                     continue
-                capture_ts = float(entry.get("capture_ts", 0.0) or 0.0)
-                if ref_ts - capture_ts > self.bind_window_seconds:
-                    stale_sides.append(side)
+                candidates = []
+                for entry in entries:
+                    capture_ts = float(entry.get("capture_ts", 0.0) or 0.0)
+                    if abs(match_ref_ts - capture_ts) > self.bind_window_seconds:
+                        continue
+                    time_delta = abs(match_ref_ts - capture_ts)
+                    candidate_key = (
+                        float(entry.get("centerDistance", 0.0) or 0.0),
+                        -float(entry.get("score", 0.0) or 0.0),
+                        time_delta,
+                        -capture_ts,
+                    )
+                    candidates.append((candidate_key, entry))
+                if not candidates:
                     continue
+                _, entry = min(candidates, key=lambda item: item[0])
                 results.append(
                     {
                         "side": str(entry.get("side") or side),
@@ -263,8 +299,6 @@ class WheelResultCache:
                         "className": str(entry.get("className") or ""),
                     }
                 )
-            for side in stale_sides:
-                self._entries.pop(side, None)
         return results
 
 

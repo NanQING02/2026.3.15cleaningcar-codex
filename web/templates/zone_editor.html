@@ -442,7 +442,7 @@
               classes: ['0-25', '25-50', '50-75', '75-100'],
               classes_text: '0-25,25-50,50-75,75-100',
               target_fps: 5,
-              center_min_margin_ratio: 0.15,
+              center_min_margin_ratio: 0.25,
               bind_window_seconds: 30
             },
             logic: {
@@ -744,7 +744,7 @@
           }
           this.form.wheel.classes_text = this.form.wheel.classes.join(',');
           this.form.wheel.target_fps = Number(this.form.wheel.target_fps || 5);
-          this.form.wheel.center_min_margin_ratio = Number(this.form.wheel.center_min_margin_ratio || 0.15);
+          this.form.wheel.center_min_margin_ratio = Number(this.form.wheel.center_min_margin_ratio || 0.25);
           this.form.wheel.bind_window_seconds = Number(this.form.wheel.bind_window_seconds || 30);
           this.form.logic.debug_overlay = !!this.form.logic.debug_overlay;
           this.form.logic.debug_track_state = !!(this.form.logic.debug_track_state || this.form.logic.debug_overlay);

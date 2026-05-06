@@ -52,11 +52,11 @@ class WheelBindingTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _type5_event():
+    def _type5_event(capture_time="2026-04-28 12:00:00"):
         return {
             "id": "evt-1",
             "type": 5,
-            "captureTime": "2026-04-28 12:00:00",
+            "captureTime": capture_time,
             "captureImage": "",
             "plateNumber": "鲁A12345",
             "videoDuration": 12.5,
@@ -117,10 +117,51 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(results[0]["className"], "75-100")
         self.assertTrue(results[0]["imageBase64"])
 
+    def test_window_prefers_nearest_center_then_higher_score(self):
+        cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
+        frame = np.full((100, 100, 3), 150, dtype=np.uint8)
+        class_names = ["0-25", "25-50", "50-75", "75-100"]
+
+        cache.update_from_detections(
+            side="left",
+            frame=frame,
+            capture_ts=1000.0,
+            boxes=np.array([[24.0, 20.0, 84.0, 80.0]], dtype=np.float32),
+            classes=np.array([0], dtype=np.int64),
+            scores=np.array([0.95], dtype=np.float32),
+            center_min_margin_ratio=0.15,
+            class_names=class_names,
+        )
+        cache.update_from_detections(
+            side="left",
+            frame=frame,
+            capture_ts=1001.0,
+            boxes=np.array([[35.0, 35.0, 65.0, 65.0]], dtype=np.float32),
+            classes=np.array([1], dtype=np.int64),
+            scores=np.array([0.60], dtype=np.float32),
+            center_min_margin_ratio=0.15,
+            class_names=class_names,
+        )
+        cache.update_from_detections(
+            side="left",
+            frame=frame,
+            capture_ts=1002.0,
+            boxes=np.array([[35.0, 35.0, 65.0, 65.0]], dtype=np.float32),
+            classes=np.array([2], dtype=np.int64),
+            scores=np.array([0.88], dtype=np.float32),
+            center_min_margin_ratio=0.15,
+            class_names=class_names,
+        )
+
+        results = cache.get_recent_results(now_ts=1002.0, reference_ts=1002.0)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["className"], "50-75")
+
     def test_type5_payload_only_attaches_simplified_wheel_fields(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
         frame = np.full((80, 80, 3), 120, dtype=np.uint8)
         now_ts = time.time()
+        capture_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_ts))
         cache.update_from_detections(
             side="left",
             frame=frame,
@@ -133,7 +174,7 @@ class WheelBindingTests(unittest.TestCase):
         )
 
         manager = self._manager(wheel_provider=cache)
-        payload = manager._build_api_payload(self._type5_event(), self._track_state(), frame_idx=30)
+        payload = manager._build_api_payload(self._type5_event(capture_time=capture_time), self._track_state(), frame_idx=30)
 
         self.assertIn("wheelResults", payload)
         self.assertEqual(len(payload["wheelResults"]), 1)
@@ -144,10 +185,44 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(payload["wheelResults"][0]["side"], "left")
         self.assertEqual(payload["wheelResults"][0]["className"], "50-75")
 
+    def test_type5_payload_prefers_samples_near_event_capture_time(self):
+        cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
+        frame = np.full((80, 80, 3), 120, dtype=np.uint8)
+        class_names = ["0-25", "25-50", "50-75", "75-100"]
+        event_ts = float(int(time.time()))
+        capture_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(event_ts))
+        cache.update_from_detections(
+            side="left",
+            frame=frame,
+            capture_ts=event_ts,
+            boxes=np.array([[28.0, 28.0, 52.0, 52.0]], dtype=np.float32),
+            classes=np.array([1], dtype=np.int64),
+            scores=np.array([0.61], dtype=np.float32),
+            center_min_margin_ratio=0.15,
+            class_names=class_names,
+        )
+        cache.update_from_detections(
+            side="left",
+            frame=frame,
+            capture_ts=event_ts + 10.0,
+            boxes=np.array([[28.0, 28.0, 52.0, 52.0]], dtype=np.float32),
+            classes=np.array([2], dtype=np.int64),
+            scores=np.array([0.61], dtype=np.float32),
+            center_min_margin_ratio=0.15,
+            class_names=class_names,
+        )
+
+        manager = self._manager(wheel_provider=cache)
+        payload = manager._build_api_payload(self._type5_event(capture_time=capture_time), self._track_state(), frame_idx=30)
+
+        self.assertIn("wheelResults", payload)
+        self.assertEqual(payload["wheelResults"][0]["className"], "25-50")
+
     def test_type5_local_event_json_also_attaches_wheel_results(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
         frame = np.full((80, 80, 3), 120, dtype=np.uint8)
         now_ts = time.time()
+        capture_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_ts))
         cache.update_from_detections(
             side="left",
             frame=frame,
@@ -167,7 +242,7 @@ class WheelBindingTests(unittest.TestCase):
             event_type=5,
             frame_idx=30,
             frame=frame,
-            payload={"captureTime": "2026-04-28 12:00:00", "washDuration": 7.3},
+            payload={"captureTime": capture_time, "washDuration": 7.3},
             track_state=track_state,
             vehicle_type="car",
         )
@@ -218,6 +293,7 @@ class WheelBindingTests(unittest.TestCase):
         self.assertFalse(config["wheel"]["enabled"])
         self.assertEqual(config["wheel"]["classes"], ["0-25", "25-50", "50-75", "75-100"])
         self.assertEqual(config["wheel"]["target_fps"], 5.0)
+        self.assertEqual(config["wheel"]["center_min_margin_ratio"], 0.25)
 
     def test_wheel_model_path_prefers_project_root_when_relative_path_exists(self):
         settings = resolve_wheel_settings(
