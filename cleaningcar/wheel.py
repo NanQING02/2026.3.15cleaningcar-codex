@@ -266,7 +266,7 @@ class WheelResultCache:
             self._entries[side] = entries
         return True
 
-    def get_recent_results(self, now_ts=None, reference_ts=None):
+    def get_recent_result_entries(self, now_ts=None, reference_ts=None):
         now_ref_ts = time.time() if now_ts is None else float(now_ts)
         match_ref_ts = now_ref_ts if reference_ts is None else float(reference_ts)
         results = []
@@ -291,14 +291,23 @@ class WheelResultCache:
                 if not candidates:
                     continue
                 _, entry = min(candidates, key=lambda item: item[0])
-                results.append(
-                    {
-                        "side": str(entry.get("side") or side),
-                        "captureTime": str(entry.get("captureTime") or ""),
-                        "imageBase64": _jpeg_bytes_to_base64(entry.get("imageJpegBytes", b"")),
-                        "className": str(entry.get("className") or ""),
-                    }
-                )
+                results.append(dict(entry))
+        return results
+
+    def get_recent_results(self, now_ts=None, reference_ts=None):
+        results = []
+        for entry in self.get_recent_result_entries(now_ts=now_ts, reference_ts=reference_ts):
+            side = str(entry.get("side") or "").strip().lower()
+            if side not in WHEEL_SIDES:
+                continue
+            results.append(
+                {
+                    "side": side,
+                    "captureTime": str(entry.get("captureTime") or ""),
+                    "imageBase64": _jpeg_bytes_to_base64(entry.get("imageJpegBytes", b"")),
+                    "className": str(entry.get("className") or ""),
+                }
+            )
         return results
 
 
@@ -655,6 +664,9 @@ class WheelDetectionService:
 
     def get_recent_results(self, now_ts=None):
         return self.result_cache.get_recent_results(now_ts=now_ts)
+
+    def get_recent_result_entries(self, now_ts=None, reference_ts=None):
+        return self.result_cache.get_recent_result_entries(now_ts=now_ts, reference_ts=reference_ts)
 
     def snapshot_stats(self):
         stats = {}

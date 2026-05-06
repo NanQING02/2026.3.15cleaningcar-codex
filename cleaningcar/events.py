@@ -319,6 +319,7 @@ class EventManager:
             'abnormal_reasons': set(),
             'type2_qualified': False,
             'type2_qualified_frame': -1,
+            'wheel_results_locked': {},
         })
         if self.single_lifecycle_events and st.get('closed'):
             st['last_frame_idx'] = frame_idx
@@ -327,6 +328,7 @@ class EventManager:
         st['last_frame_idx'] = frame_idx
         if frame is not None:
             st['last_frame'] = frame.copy() if self.copy_track_last_frame else frame
+        self._update_track_wheel_results(st, frame_ts=time.time())
         freeze_label = st.get('vehicle_cls_frozen', False)
         if vehicle_box is not None and st.get('last_vehicle_box') is not None:
             prev = st['last_vehicle_box']
@@ -815,7 +817,7 @@ class EventManager:
                     video_duration = 0.0
             event['videoDuration'] = video_duration
             event['cleanliness'] = self.default_cleanliness
-            self._attach_wheel_results(event)
+            self._attach_wheel_results(event, track_state=track_state)
         if track_state.get('wash_start_time') and not event.get('washStartTime'):
             event['washStartTime'] = track_state.get('wash_start_time')
         capture_ts_val = None
@@ -1537,7 +1539,7 @@ class EventManager:
                 payload['washStartTime'] = wash_start_time
             payload['direction'] = dir_code
             payload['directionLabel'] = dir_label
-            self._attach_wheel_results(payload)
+            self._attach_wheel_results(payload, track_state=track_state)
         else:
             payload['lane'] = lane
             payload['plateNumber'] = plate_number
@@ -1559,11 +1561,11 @@ class EventManager:
                 payload['abnormalReason'] = '|'.join(reasons_list)
         return payload
 
-    def _attach_wheel_results(self, payload):
+    def _attach_wheel_results(self, payload, track_state=None):
         if not isinstance(payload, dict):
             return payload
         reference_ts = self._parse_capture_time_to_ts(payload.get('captureTime'))
-        wheel_results = self._build_wheel_results_payload(reference_ts=reference_ts)
+        wheel_results = self._build_wheel_results_payload(track_state=track_state, reference_ts=reference_ts)
         if wheel_results:
             payload['wheelResults'] = wheel_results
         return payload
@@ -1578,20 +1580,64 @@ class EventManager:
         except Exception:
             return None
 
-    def _build_wheel_results_payload(self, reference_ts=None):
+    @staticmethod
+    def _serialize_locked_wheel_entry(side, entry):
+        side = str(side or '').strip().lower()
+        if side not in ('left', 'right') or not isinstance(entry, dict):
+            return None
+        capture_time = str(entry.get('captureTime') or '').strip()
+        class_name = str(entry.get('className') or '').strip()
+        image_b64 = str(entry.get('imageBase64') or '').strip()
+        if not image_b64:
+            image_bytes = entry.get('imageJpegBytes', b'') or b''
+            if image_bytes:
+                image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+        if not capture_time or not class_name or not image_b64:
+            return None
+        return {
+            'side': side,
+            'captureTime': capture_time,
+            'imageBase64': image_b64,
+            'className': class_name,
+        }
+
+    def _build_locked_wheel_results_payload(self, track_state):
+        if not isinstance(track_state, dict):
+            return []
+        locked = track_state.get('wheel_results_locked')
+        if not isinstance(locked, dict):
+            return []
+        results = []
+        for side in ('left', 'right'):
+            item = self._serialize_locked_wheel_entry(side, locked.get(side))
+            if item:
+                results.append(item)
+        return results
+
+    def _build_wheel_results_payload(self, track_state=None, reference_ts=None):
+        locked_results = self._build_locked_wheel_results_payload(track_state)
+        if locked_results:
+            return locked_results
         provider = getattr(self, 'wheel_result_provider', None)
         if provider is None:
             return []
+        internal_getter = getattr(provider, 'get_recent_result_entries', None)
         getter = getattr(provider, 'get_recent_results', None)
-        if not callable(getter):
+        if not callable(internal_getter) and not callable(getter):
             return []
         try:
-            items = getter(now_ts=time.time(), reference_ts=reference_ts)
+            if callable(internal_getter):
+                items = internal_getter(now_ts=time.time(), reference_ts=reference_ts)
+            else:
+                items = getter(now_ts=time.time(), reference_ts=reference_ts)
         except TypeError:
             try:
-                items = getter(now_ts=time.time())
+                if callable(internal_getter):
+                    items = internal_getter(now_ts=time.time())
+                else:
+                    items = getter(now_ts=time.time())
             except TypeError:
-                items = getter()
+                items = internal_getter() if callable(internal_getter) else getter()
         except Exception as exc:
             for line in self.log_throttler.record(
                 key='wheel_results.provider_error',
@@ -1609,18 +1655,77 @@ class EventManager:
             side = str(item.get('side') or '').strip().lower()
             if side not in ('left', 'right'):
                 continue
-            capture_time = str(item.get('captureTime') or '').strip()
-            image_base64 = str(item.get('imageBase64') or '').strip()
-            class_name = str(item.get('className') or '').strip()
-            if not capture_time or not image_base64 or not class_name:
+            serialized = self._serialize_locked_wheel_entry(side, item)
+            if not serialized:
                 continue
-            cleaned[side] = {
+            cleaned[side] = serialized
+        return [cleaned[side] for side in ('left', 'right') if side in cleaned]
+
+    def _update_track_wheel_results(self, track_state, frame_ts=None):
+        if not isinstance(track_state, dict):
+            return
+        provider = getattr(self, 'wheel_result_provider', None)
+        if provider is None:
+            return
+        getter = getattr(provider, 'get_recent_result_entries', None)
+        if not callable(getter):
+            return
+        ref_ts = time.time() if frame_ts is None else float(frame_ts)
+        try:
+            items = getter(now_ts=ref_ts, reference_ts=ref_ts)
+        except TypeError:
+            try:
+                items = getter(now_ts=ref_ts)
+            except TypeError:
+                items = getter()
+        except Exception as exc:
+            for line in self.log_throttler.record(
+                key='wheel_results.track_update_error',
+                message=f'[wheel] failed to update lifecycle wheel results: {exc}',
+                now=time.time(),
+                window_seconds=10.0,
+            ):
+                print(line)
+            return
+        if not isinstance(items, list):
+            return
+        locked = track_state.setdefault('wheel_results_locked', {})
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            side = str(item.get('side') or '').strip().lower()
+            if side not in ('left', 'right'):
+                continue
+            capture_time = str(item.get('captureTime') or '').strip()
+            class_name = str(item.get('className') or '').strip()
+            image_bytes = item.get('imageJpegBytes', b'') or b''
+            if not capture_time or not class_name or not image_bytes:
+                continue
+            candidate = {
                 'side': side,
                 'captureTime': capture_time,
-                'imageBase64': image_base64,
+                'imageJpegBytes': image_bytes,
                 'className': class_name,
+                'score': float(item.get('score', 0.0) or 0.0),
+                'centerDistance': float(item.get('centerDistance', 0.0) or 0.0),
+                'capture_ts': float(item.get('capture_ts', ref_ts) or ref_ts),
             }
-        return [cleaned[side] for side in ('left', 'right') if side in cleaned]
+            current = locked.get(side)
+            if not isinstance(current, dict):
+                locked[side] = candidate
+                continue
+            current_key = (
+                float(current.get('centerDistance', 0.0) or 0.0),
+                -float(current.get('score', 0.0) or 0.0),
+                -float(current.get('capture_ts', 0.0) or 0.0),
+            )
+            candidate_key = (
+                candidate['centerDistance'],
+                -candidate['score'],
+                -candidate['capture_ts'],
+            )
+            if candidate_key < current_key:
+                locked[side] = candidate
 
     def _resolve_direction(self, track_state):
         state = None

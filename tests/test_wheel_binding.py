@@ -25,6 +25,14 @@ class _DummyZoneManager:
         return 0, ""
 
 
+class _StaticWheelProvider:
+    def __init__(self, items=None):
+        self.items = list(items or [])
+
+    def get_recent_result_entries(self, now_ts=None, reference_ts=None):
+        return list(self.items)
+
+
 class WheelBindingTests(unittest.TestCase):
     def _manager(self, wheel_provider=None):
         temp_dir = tempfile.TemporaryDirectory()
@@ -259,6 +267,62 @@ class WheelBindingTests(unittest.TestCase):
         )
         self.assertEqual(event["wheelResults"][0]["side"], "left")
         self.assertEqual(event["wheelResults"][0]["className"], "50-75")
+
+    def test_lifecycle_locked_wheel_results_survive_after_provider_no_longer_has_recent_items(self):
+        provider = _StaticWheelProvider([
+            {
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:40",
+                "imageJpegBytes": b"abc",
+                "className": "25-50",
+                "score": 0.71,
+                "centerDistance": 12.0,
+                "capture_ts": 1000.0,
+            }
+        ])
+        manager = self._manager(wheel_provider=provider)
+        track_state = self._track_state()
+
+        manager._update_track_wheel_results(track_state, frame_ts=1000.0)
+        provider.items = []
+
+        payload = manager._build_api_payload(self._type5_event(capture_time="2026-04-28 12:10:00"), track_state, frame_idx=30)
+
+        self.assertIn("wheelResults", payload)
+        self.assertEqual(payload["wheelResults"][0]["className"], "25-50")
+
+    def test_lifecycle_locked_wheel_results_upgrade_to_better_candidate(self):
+        provider = _StaticWheelProvider([
+            {
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:40",
+                "imageJpegBytes": b"first",
+                "className": "0-25",
+                "score": 0.95,
+                "centerDistance": 22.0,
+                "capture_ts": 1000.0,
+            }
+        ])
+        manager = self._manager(wheel_provider=provider)
+        track_state = self._track_state()
+
+        manager._update_track_wheel_results(track_state, frame_ts=1000.0)
+        provider.items = [
+            {
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:45",
+                "imageJpegBytes": b"second",
+                "className": "50-75",
+                "score": 0.62,
+                "centerDistance": 5.0,
+                "capture_ts": 1005.0,
+            }
+        ]
+        manager._update_track_wheel_results(track_state, frame_ts=1005.0)
+
+        locked = track_state.get("wheel_results_locked", {}).get("left", {})
+        self.assertEqual(locked.get("className"), "50-75")
+        self.assertEqual(locked.get("imageJpegBytes"), b"second")
 
     def test_type5_payload_omits_wheel_results_when_provider_absent(self):
         manager = self._manager(wheel_provider=None)
