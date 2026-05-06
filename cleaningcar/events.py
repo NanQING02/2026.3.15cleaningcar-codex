@@ -186,6 +186,8 @@ class EventManager:
         self.capture_quality = int(config.get('event_capture_quality', 85) or 85)
         self.copy_track_last_frame = bool(self.logic.get('copy_track_last_frame', False))
         self.wheel_result_provider = wheel_result_provider
+        self.wheel_result_claim_seconds = 5.0
+        self._wheel_result_claims = {}
         self.lane_name = config.get('lane_name', '冲洗')
         self.default_plate_color = config.get('default_plate_color', '')
         self.default_plate_color_conf = float(config.get('default_plate_color_conf', 0.0))
@@ -328,7 +330,7 @@ class EventManager:
         st['last_frame_idx'] = frame_idx
         if frame is not None:
             st['last_frame'] = frame.copy() if self.copy_track_last_frame else frame
-        self._update_track_wheel_results(st, frame_ts=time.time())
+        self._update_track_wheel_results(track_id, st, frame_ts=time.time())
         freeze_label = st.get('vehicle_cls_frozen', False)
         if vehicle_box is not None and st.get('last_vehicle_box') is not None:
             prev = st['last_vehicle_box']
@@ -1606,7 +1608,53 @@ class EventManager:
     def _build_wheel_results_payload(self, track_state=None):
         return self._build_locked_wheel_results_payload(track_state)
 
-    def _update_track_wheel_results(self, track_state, frame_ts=None):
+    @staticmethod
+    def _wheel_result_claim_key(item):
+        if not isinstance(item, dict):
+            return None
+        side = str(item.get('side') or '').strip().lower()
+        if side not in ('left', 'right'):
+            return None
+        try:
+            capture_ts = float(item.get('capture_ts', 0.0) or 0.0)
+        except Exception:
+            capture_ts = 0.0
+        class_name = str(item.get('className') or '').strip()
+        capture_time = str(item.get('captureTime') or '').strip()
+        return (side, round(capture_ts, 3), capture_time, class_name)
+
+    def _prune_wheel_result_claims(self, now_ts):
+        if not self._wheel_result_claims:
+            return
+        expired_keys = [
+            key for key, meta in self._wheel_result_claims.items()
+            if float((meta or {}).get('expires_at', 0.0) or 0.0) < float(now_ts)
+        ]
+        for key in expired_keys:
+            self._wheel_result_claims.pop(key, None)
+
+    def _claim_wheel_result(self, track_id, item, now_ts):
+        key = self._wheel_result_claim_key(item)
+        if key is None:
+            return
+        self._wheel_result_claims[key] = {
+            'track_id': int(track_id),
+            'expires_at': float(now_ts) + float(self.wheel_result_claim_seconds),
+        }
+
+    def _is_wheel_result_claimed_by_other(self, track_id, item, now_ts):
+        self._prune_wheel_result_claims(now_ts)
+        key = self._wheel_result_claim_key(item)
+        if key is None:
+            return False
+        meta = self._wheel_result_claims.get(key) or {}
+        owner = int(meta.get('track_id', 0) or 0)
+        if owner <= 0 or owner == int(track_id):
+            return False
+        expires_at = float(meta.get('expires_at', 0.0) or 0.0)
+        return expires_at >= float(now_ts)
+
+    def _update_track_wheel_results(self, track_id, track_state, frame_ts=None):
         if not isinstance(track_state, dict):
             return
         provider = getattr(self, 'wheel_result_provider', None)
@@ -1655,9 +1703,12 @@ class EventManager:
                 'centerDistance': float(item.get('centerDistance', 0.0) or 0.0),
                 'capture_ts': float(item.get('capture_ts', ref_ts) or ref_ts),
             }
+            if self._is_wheel_result_claimed_by_other(track_id, candidate, ref_ts):
+                continue
             current = locked.get(side)
             if not isinstance(current, dict):
                 locked[side] = candidate
+                self._claim_wheel_result(track_id, candidate, ref_ts)
                 continue
             current_key = (
                 float(current.get('centerDistance', 0.0) or 0.0),
@@ -1671,6 +1722,7 @@ class EventManager:
             )
             if candidate_key < current_key:
                 locked[side] = candidate
+                self._claim_wheel_result(track_id, candidate, ref_ts)
 
     def _resolve_direction(self, track_state):
         state = None

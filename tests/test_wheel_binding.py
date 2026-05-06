@@ -183,7 +183,7 @@ class WheelBindingTests(unittest.TestCase):
 
         manager = self._manager(wheel_provider=cache)
         track_state = self._track_state()
-        manager._update_track_wheel_results(track_state, frame_ts=now_ts)
+        manager._update_track_wheel_results(1, track_state, frame_ts=now_ts)
         payload = manager._build_api_payload(self._type5_event(capture_time=capture_time), track_state, frame_idx=30)
 
         self.assertIn("wheelResults", payload)
@@ -245,7 +245,7 @@ class WheelBindingTests(unittest.TestCase):
 
         manager = self._manager(wheel_provider=cache)
         track_state = self._track_state()
-        manager._update_track_wheel_results(track_state, frame_ts=now_ts)
+        manager._update_track_wheel_results(1, track_state, frame_ts=now_ts)
         track_state["type1_capture_time"] = "2026-04-28 11:59:47"
         manager._emit_event_core(
             track_id=1,
@@ -285,7 +285,7 @@ class WheelBindingTests(unittest.TestCase):
         manager = self._manager(wheel_provider=provider)
         track_state = self._track_state()
 
-        manager._update_track_wheel_results(track_state, frame_ts=1000.0)
+        manager._update_track_wheel_results(1, track_state, frame_ts=1000.0)
         provider.items = []
 
         payload = manager._build_api_payload(self._type5_event(capture_time="2026-04-28 12:10:00"), track_state, frame_idx=30)
@@ -308,7 +308,7 @@ class WheelBindingTests(unittest.TestCase):
         manager = self._manager(wheel_provider=provider)
         track_state = self._track_state()
 
-        manager._update_track_wheel_results(track_state, frame_ts=1000.0)
+        manager._update_track_wheel_results(1, track_state, frame_ts=1000.0)
         provider.items = [
             {
                 "side": "left",
@@ -320,7 +320,7 @@ class WheelBindingTests(unittest.TestCase):
                 "capture_ts": 1005.0,
             }
         ]
-        manager._update_track_wheel_results(track_state, frame_ts=1005.0)
+        manager._update_track_wheel_results(1, track_state, frame_ts=1005.0)
 
         locked = track_state.get("wheel_results_locked", {}).get("left", {})
         self.assertEqual(locked.get("className"), "50-75")
@@ -366,6 +366,31 @@ class WheelBindingTests(unittest.TestCase):
 
         locked = manager.tracks[1].get("wheel_results_locked", {}).get("left", {})
         self.assertEqual(locked.get("className"), "25-50")
+
+    def test_wheel_result_is_not_reused_by_other_track_within_5_seconds(self):
+        provider = _StaticWheelProvider([
+            {
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:40",
+                "imageJpegBytes": b"abc",
+                "className": "25-50",
+                "score": 0.71,
+                "centerDistance": 12.0,
+                "capture_ts": 1000.0,
+            }
+        ])
+        manager = self._manager(wheel_provider=provider)
+        track_state_1 = self._track_state()
+        track_state_2 = self._track_state()
+
+        manager._update_track_wheel_results(1, track_state_1, frame_ts=1000.0)
+        manager._update_track_wheel_results(2, track_state_2, frame_ts=1002.0)
+
+        self.assertIn("left", track_state_1.get("wheel_results_locked", {}))
+        self.assertNotIn("left", track_state_2.get("wheel_results_locked", {}))
+
+        manager._update_track_wheel_results(2, track_state_2, frame_ts=1006.0)
+        self.assertIn("left", track_state_2.get("wheel_results_locked", {}))
 
     def test_runtime_config_includes_wheel_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:
