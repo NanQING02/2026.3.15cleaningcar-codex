@@ -19,6 +19,7 @@ DEFAULT_WHEEL_CLASSES = ["0-25", "25-50", "50-75", "75-100"]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WHEEL_MODEL_PATH = (PROJECT_ROOT / "models" / "wheel" / "2026.4.28CRwheelfp.rknn").resolve()
 DEFAULT_CENTER_MIN_MARGIN_RATIO = 0.25
+DEFAULT_ENTRY_CLUSTER_SECONDS = 1.5
 WHEEL_SIDES = ("left", "right")
 
 
@@ -201,9 +202,15 @@ def _jpeg_bytes_to_base64(data):
 
 
 class WheelResultCache:
-    def __init__(self, bind_window_seconds=30.0, image_quality=85):
+    def __init__(
+        self,
+        bind_window_seconds=30.0,
+        image_quality=85,
+        entry_cluster_seconds=DEFAULT_ENTRY_CLUSTER_SECONDS,
+    ):
         self.bind_window_seconds = max(1.0, float(bind_window_seconds))
         self.image_quality = int(min(max(int(image_quality), 1), 100))
+        self.entry_cluster_seconds = max(0.0, float(entry_cluster_seconds))
         self._entries: Dict[str, list] = {}
         self._lock = threading.Lock()
         self._next_entry_id = 1
@@ -316,7 +323,17 @@ class WheelResultCache:
                     owner = int(entry.get("claimedTrackId", 0) or 0)
                     if owner > 0 and owner != track_id:
                         return False
+                    target_ts = float(entry.get("capture_ts", 0.0) or 0.0)
                     entry["claimedTrackId"] = track_id
+                    if self.entry_cluster_seconds > 0.0:
+                        for sibling in entries:
+                            sibling_ts = float(sibling.get("capture_ts", 0.0) or 0.0)
+                            if abs(sibling_ts - target_ts) > self.entry_cluster_seconds:
+                                continue
+                            sibling_owner = int(sibling.get("claimedTrackId", 0) or 0)
+                            if sibling_owner > 0 and sibling_owner != track_id:
+                                continue
+                            sibling["claimedTrackId"] = track_id
                     return True
         return False
 

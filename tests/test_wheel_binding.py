@@ -29,6 +29,7 @@ class _StaticWheelProvider:
     def __init__(self, items=None):
         self.items = list(items or [])
         self.claims = {}
+        self.entry_cluster_seconds = 1.5
 
     def get_recent_result_entries(self, now_ts=None, reference_ts=None, track_id=None):
         track_id = int(track_id or 0)
@@ -47,10 +48,31 @@ class _StaticWheelProvider:
         entry_id = int(entry_id or 0)
         if track_id <= 0 or entry_id <= 0:
             return False
+        target = None
+        for item in self.items:
+            if int(item.get("entryId", 0) or 0) == entry_id:
+                target = item
+                break
+        if not target:
+            return False
         owner = int(self.claims.get(entry_id, 0) or 0)
         if owner > 0 and owner != track_id:
             return False
-        self.claims[entry_id] = track_id
+        target_ts = float(target.get("capture_ts", 0.0) or 0.0)
+        target_side = str(target.get("side") or "").strip().lower()
+        for item in self.items:
+            item_id = int(item.get("entryId", 0) or 0)
+            if item_id <= 0:
+                continue
+            if str(item.get("side") or "").strip().lower() != target_side:
+                continue
+            item_ts = float(item.get("capture_ts", 0.0) or 0.0)
+            if abs(item_ts - target_ts) > self.entry_cluster_seconds:
+                continue
+            item_owner = int(self.claims.get(item_id, 0) or 0)
+            if item_owner > 0 and item_owner != track_id:
+                continue
+            self.claims[item_id] = track_id
         return True
 
 
@@ -416,6 +438,54 @@ class WheelBindingTests(unittest.TestCase):
         self.assertNotIn("left", track_state_2.get("wheel_results_locked", {}))
 
         manager._update_track_wheel_results(2, track_state_2, frame_ts=1006.0)
+        self.assertNotIn("left", track_state_2.get("wheel_results_locked", {}))
+
+    def test_claiming_one_entry_also_claims_same_side_neighbor_entries_within_1_5_seconds(self):
+        provider = _StaticWheelProvider([
+            {
+                "entryId": 106,
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:40",
+                "imageJpegBytes": b"a",
+                "className": "0-25",
+                "score": 0.60,
+                "centerDistance": 8.0,
+                "capture_ts": 1000.0,
+            },
+            {
+                "entryId": 107,
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:40",
+                "imageJpegBytes": b"b",
+                "className": "25-50",
+                "score": 0.80,
+                "centerDistance": 3.0,
+                "capture_ts": 1000.6,
+            },
+            {
+                "entryId": 108,
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:41",
+                "imageJpegBytes": b"c",
+                "className": "50-75",
+                "score": 0.70,
+                "centerDistance": 4.0,
+                "capture_ts": 1001.2,
+            },
+        ])
+        manager = self._manager(wheel_provider=provider)
+        track_state_1 = self._track_state()
+        track_state_2 = self._track_state()
+
+        manager._update_track_wheel_results(1, track_state_1, frame_ts=1001.2)
+        left_locked = track_state_1.get("wheel_results_locked", {}).get("left", {})
+
+        self.assertEqual(left_locked.get("entryId"), 107)
+        self.assertEqual(provider.claims.get(106), 1)
+        self.assertEqual(provider.claims.get(107), 1)
+        self.assertEqual(provider.claims.get(108), 1)
+
+        manager._update_track_wheel_results(2, track_state_2, frame_ts=1001.2)
         self.assertNotIn("left", track_state_2.get("wheel_results_locked", {}))
 
     def test_runtime_config_includes_wheel_defaults(self):
