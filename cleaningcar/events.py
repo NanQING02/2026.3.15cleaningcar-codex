@@ -1564,21 +1564,10 @@ class EventManager:
     def _attach_wheel_results(self, payload, track_state=None):
         if not isinstance(payload, dict):
             return payload
-        reference_ts = self._parse_capture_time_to_ts(payload.get('captureTime'))
-        wheel_results = self._build_wheel_results_payload(track_state=track_state, reference_ts=reference_ts)
+        wheel_results = self._build_wheel_results_payload(track_state=track_state)
         if wheel_results:
             payload['wheelResults'] = wheel_results
         return payload
-
-    @staticmethod
-    def _parse_capture_time_to_ts(value):
-        text = str(value or '').strip()
-        if not text:
-            return None
-        try:
-            return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").timestamp()
-        except Exception:
-            return None
 
     @staticmethod
     def _serialize_locked_wheel_entry(side, entry):
@@ -1614,52 +1603,8 @@ class EventManager:
                 results.append(item)
         return results
 
-    def _build_wheel_results_payload(self, track_state=None, reference_ts=None):
-        locked_results = self._build_locked_wheel_results_payload(track_state)
-        if locked_results:
-            return locked_results
-        provider = getattr(self, 'wheel_result_provider', None)
-        if provider is None:
-            return []
-        internal_getter = getattr(provider, 'get_recent_result_entries', None)
-        getter = getattr(provider, 'get_recent_results', None)
-        if not callable(internal_getter) and not callable(getter):
-            return []
-        try:
-            if callable(internal_getter):
-                items = internal_getter(now_ts=time.time(), reference_ts=reference_ts)
-            else:
-                items = getter(now_ts=time.time(), reference_ts=reference_ts)
-        except TypeError:
-            try:
-                if callable(internal_getter):
-                    items = internal_getter(now_ts=time.time())
-                else:
-                    items = getter(now_ts=time.time())
-            except TypeError:
-                items = internal_getter() if callable(internal_getter) else getter()
-        except Exception as exc:
-            for line in self.log_throttler.record(
-                key='wheel_results.provider_error',
-                message=f'[wheel] failed to fetch wheel results: {exc}',
-                now=time.time(),
-                window_seconds=10.0,
-            ):
-                print(line)
-            return []
-
-        cleaned = {}
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            side = str(item.get('side') or '').strip().lower()
-            if side not in ('left', 'right'):
-                continue
-            serialized = self._serialize_locked_wheel_entry(side, item)
-            if not serialized:
-                continue
-            cleaned[side] = serialized
-        return [cleaned[side] for side in ('left', 'right') if side in cleaned]
+    def _build_wheel_results_payload(self, track_state=None):
+        return self._build_locked_wheel_results_payload(track_state)
 
     def _update_track_wheel_results(self, track_state, frame_ts=None):
         if not isinstance(track_state, dict):

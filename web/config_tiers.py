@@ -55,7 +55,6 @@ CONFIG_FIELD_REGISTRY: List[Dict[str, str]] = [
     {"path": "wheel.classes", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮分类标签"},
     {"path": "wheel.target_fps", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮目标 FPS"},
     {"path": "wheel.center_min_margin_ratio", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮中心安全边距"},
-    {"path": "wheel.bind_window_seconds", "tier": TIER_DEVELOPER, "group": "wheel", "label": "车轮绑定窗口秒数"},
     {"path": "logic.detection_anchor", "tier": TIER_DEVELOPER, "group": "logic", "label": "检测锚点"},
     {"path": "logic.zone_a_mask_enable", "tier": TIER_DEVELOPER, "group": "logic", "label": "Zone A Mask"},
     {"path": "logic.zone_b_entry_hysteresis", "tier": TIER_DEVELOPER, "group": "logic", "label": "Zone B 进入迟滞"},

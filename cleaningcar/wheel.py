@@ -644,8 +644,7 @@ class WheelDetectionService:
         print(
             f"[wheel] enabled sides={','.join(self.active_sides)} "
             f"target_fps={self.settings['target_fps']:.2f} "
-            f"imgsz={self.imgsz} core_mask={self.core_mask} "
-            f"bind_window={self.settings['bind_window_seconds']:.1f}s"
+            f"imgsz={self.imgsz} core_mask={self.core_mask}"
         )
         return True
 

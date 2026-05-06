@@ -49,8 +49,7 @@
     "target_fps": 3.0,
     "core_mask": "",
     "imgsz": 640,
-    "center_min_margin_ratio": 0.25,
-    "bind_window_seconds": 30.0
+    "center_min_margin_ratio": 0.25
   },
   "zones": {
     "zone_a_detection": [

@@ -182,7 +182,9 @@ class WheelBindingTests(unittest.TestCase):
         )
 
         manager = self._manager(wheel_provider=cache)
-        payload = manager._build_api_payload(self._type5_event(capture_time=capture_time), self._track_state(), frame_idx=30)
+        track_state = self._track_state()
+        manager._update_track_wheel_results(track_state, frame_ts=now_ts)
+        payload = manager._build_api_payload(self._type5_event(capture_time=capture_time), track_state, frame_idx=30)
 
         self.assertIn("wheelResults", payload)
         self.assertEqual(len(payload["wheelResults"]), 1)
@@ -193,7 +195,7 @@ class WheelBindingTests(unittest.TestCase):
         self.assertEqual(payload["wheelResults"][0]["side"], "left")
         self.assertEqual(payload["wheelResults"][0]["className"], "50-75")
 
-    def test_type5_payload_prefers_samples_near_event_capture_time(self):
+    def test_type5_payload_does_not_fallback_to_provider_without_lifecycle_lock(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
         frame = np.full((80, 80, 3), 120, dtype=np.uint8)
         class_names = ["0-25", "25-50", "50-75", "75-100"]
@@ -223,8 +225,7 @@ class WheelBindingTests(unittest.TestCase):
         manager = self._manager(wheel_provider=cache)
         payload = manager._build_api_payload(self._type5_event(capture_time=capture_time), self._track_state(), frame_idx=30)
 
-        self.assertIn("wheelResults", payload)
-        self.assertEqual(payload["wheelResults"][0]["className"], "25-50")
+        self.assertNotIn("wheelResults", payload)
 
     def test_type5_local_event_json_also_attaches_wheel_results(self):
         cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80)
@@ -244,6 +245,7 @@ class WheelBindingTests(unittest.TestCase):
 
         manager = self._manager(wheel_provider=cache)
         track_state = self._track_state()
+        manager._update_track_wheel_results(track_state, frame_ts=now_ts)
         track_state["type1_capture_time"] = "2026-04-28 11:59:47"
         manager._emit_event_core(
             track_id=1,
@@ -330,6 +332,40 @@ class WheelBindingTests(unittest.TestCase):
         payload = manager._build_api_payload(self._type5_event(), self._track_state(), frame_idx=30)
 
         self.assertNotIn("wheelResults", payload)
+
+    def test_update_track_starts_lifecycle_locking_before_type5(self):
+        provider = _StaticWheelProvider([
+            {
+                "side": "left",
+                "captureTime": "2026-04-28 11:59:40",
+                "imageJpegBytes": b"abc",
+                "className": "25-50",
+                "score": 0.71,
+                "centerDistance": 12.0,
+                "capture_ts": 1000.0,
+            }
+        ])
+        manager = self._manager(wheel_provider=provider)
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+
+        manager.update_track(
+            track_id=1,
+            plate_box=None,
+            vehicle_box=[0, 0, 20, 20],
+            plate_text="",
+            frame_idx=1,
+            frame=frame,
+            water_boxes=[],
+            water_active=False,
+            is_plate=False,
+            vehicle_label="car",
+            vehicle_conf=0.9,
+            plate_conf=0.0,
+            confirmed=False,
+        )
+
+        locked = manager.tracks[1].get("wheel_results_locked", {}).get("left", {})
+        self.assertEqual(locked.get("className"), "25-50")
 
     def test_runtime_config_includes_wheel_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:
