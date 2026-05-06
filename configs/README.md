@@ -69,6 +69,7 @@ FP 检测模型后处理模式：
   - 当前默认值：`0.25`
 - `wheel.classes`
   - 当前默认：`0-25`、`25-50`、`50-75`、`75-100`
+  - `type=5` 上传时直接透传为 `wheelResults[].className`
 
 ### `system.startup_capture_dir` / `system.manual_capture_dir`
 
