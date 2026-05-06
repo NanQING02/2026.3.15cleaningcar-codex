@@ -206,6 +206,7 @@ class WheelResultCache:
         self.image_quality = int(min(max(int(image_quality), 1), 100))
         self._entries: Dict[str, list] = {}
         self._lock = threading.Lock()
+        self._next_entry_id = 1
 
     def _prune_entries(self, side, cutoff_ts):
         entries = list(self._entries.get(side) or [])
@@ -250,6 +251,7 @@ class WheelResultCache:
 
         capture_ts = time.time() if capture_ts is None else float(capture_ts)
         entry = {
+            "entryId": int(self._next_entry_id),
             "side": side,
             "captureTime": datetime.fromtimestamp(capture_ts).strftime("%Y-%m-%d %H:%M:%S"),
             "imageJpegBytes": image_jpeg,
@@ -258,17 +260,20 @@ class WheelResultCache:
             "centerDistance": float(candidate.get("centerDistance", 0.0) or 0.0),
             "centerPoint": list(candidate.get("centerPoint") or []),
             "capture_ts": capture_ts,
+            "claimedTrackId": 0,
         }
         with self._lock:
+            self._next_entry_id += 1
             cutoff_ts = capture_ts - self.bind_window_seconds
             entries = self._prune_entries(side, cutoff_ts)
             entries.append(entry)
             self._entries[side] = entries
         return True
 
-    def get_recent_result_entries(self, now_ts=None, reference_ts=None):
+    def get_recent_result_entries(self, now_ts=None, reference_ts=None, track_id=None):
         now_ref_ts = time.time() if now_ts is None else float(now_ts)
         match_ref_ts = now_ref_ts if reference_ts is None else float(reference_ts)
+        track_id = int(track_id or 0)
         results = []
         with self._lock:
             for side in WHEEL_SIDES:
@@ -279,6 +284,9 @@ class WheelResultCache:
                 for entry in entries:
                     capture_ts = float(entry.get("capture_ts", 0.0) or 0.0)
                     if abs(match_ref_ts - capture_ts) > self.bind_window_seconds:
+                        continue
+                    claimed_track_id = int(entry.get("claimedTrackId", 0) or 0)
+                    if claimed_track_id > 0 and claimed_track_id != track_id:
                         continue
                     time_delta = abs(match_ref_ts - capture_ts)
                     candidate_key = (
@@ -293,6 +301,24 @@ class WheelResultCache:
                 _, entry = min(candidates, key=lambda item: item[0])
                 results.append(dict(entry))
         return results
+
+    def claim_result_entry(self, track_id, entry_id):
+        track_id = int(track_id or 0)
+        entry_id = int(entry_id or 0)
+        if track_id <= 0 or entry_id <= 0:
+            return False
+        with self._lock:
+            for side in WHEEL_SIDES:
+                entries = self._entries.get(side) or []
+                for entry in entries:
+                    if int(entry.get("entryId", 0) or 0) != entry_id:
+                        continue
+                    owner = int(entry.get("claimedTrackId", 0) or 0)
+                    if owner > 0 and owner != track_id:
+                        return False
+                    entry["claimedTrackId"] = track_id
+                    return True
+        return False
 
     def get_recent_results(self, now_ts=None, reference_ts=None):
         results = []
@@ -664,8 +690,15 @@ class WheelDetectionService:
     def get_recent_results(self, now_ts=None):
         return self.result_cache.get_recent_results(now_ts=now_ts)
 
-    def get_recent_result_entries(self, now_ts=None, reference_ts=None):
-        return self.result_cache.get_recent_result_entries(now_ts=now_ts, reference_ts=reference_ts)
+    def get_recent_result_entries(self, now_ts=None, reference_ts=None, track_id=None):
+        return self.result_cache.get_recent_result_entries(
+            now_ts=now_ts,
+            reference_ts=reference_ts,
+            track_id=track_id,
+        )
+
+    def claim_result_entry(self, track_id, entry_id):
+        return self.result_cache.claim_result_entry(track_id, entry_id)
 
     def snapshot_stats(self):
         stats = {}

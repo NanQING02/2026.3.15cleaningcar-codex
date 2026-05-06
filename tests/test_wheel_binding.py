@@ -28,9 +28,30 @@ class _DummyZoneManager:
 class _StaticWheelProvider:
     def __init__(self, items=None):
         self.items = list(items or [])
+        self.claims = {}
 
-    def get_recent_result_entries(self, now_ts=None, reference_ts=None):
-        return list(self.items)
+    def get_recent_result_entries(self, now_ts=None, reference_ts=None, track_id=None):
+        track_id = int(track_id or 0)
+        results = []
+        for item in self.items:
+            copied = dict(item)
+            entry_id = int(copied.get("entryId", 0) or 0)
+            owner = int(self.claims.get(entry_id, 0) or 0)
+            if owner > 0 and owner != track_id:
+                continue
+            results.append(copied)
+        return results
+
+    def claim_result_entry(self, track_id, entry_id):
+        track_id = int(track_id or 0)
+        entry_id = int(entry_id or 0)
+        if track_id <= 0 or entry_id <= 0:
+            return False
+        owner = int(self.claims.get(entry_id, 0) or 0)
+        if owner > 0 and owner != track_id:
+            return False
+        self.claims[entry_id] = track_id
+        return True
 
 
 class WheelBindingTests(unittest.TestCase):
@@ -273,6 +294,7 @@ class WheelBindingTests(unittest.TestCase):
     def test_lifecycle_locked_wheel_results_survive_after_provider_no_longer_has_recent_items(self):
         provider = _StaticWheelProvider([
             {
+                "entryId": 1,
                 "side": "left",
                 "captureTime": "2026-04-28 11:59:40",
                 "imageJpegBytes": b"abc",
@@ -296,6 +318,7 @@ class WheelBindingTests(unittest.TestCase):
     def test_lifecycle_locked_wheel_results_upgrade_to_better_candidate(self):
         provider = _StaticWheelProvider([
             {
+                "entryId": 1,
                 "side": "left",
                 "captureTime": "2026-04-28 11:59:40",
                 "imageJpegBytes": b"first",
@@ -311,6 +334,7 @@ class WheelBindingTests(unittest.TestCase):
         manager._update_track_wheel_results(1, track_state, frame_ts=1000.0)
         provider.items = [
             {
+                "entryId": 2,
                 "side": "left",
                 "captureTime": "2026-04-28 11:59:45",
                 "imageJpegBytes": b"second",
@@ -336,6 +360,7 @@ class WheelBindingTests(unittest.TestCase):
     def test_update_track_starts_lifecycle_locking_before_type5(self):
         provider = _StaticWheelProvider([
             {
+                "entryId": 1,
                 "side": "left",
                 "captureTime": "2026-04-28 11:59:40",
                 "imageJpegBytes": b"abc",
@@ -367,9 +392,10 @@ class WheelBindingTests(unittest.TestCase):
         locked = manager.tracks[1].get("wheel_results_locked", {}).get("left", {})
         self.assertEqual(locked.get("className"), "25-50")
 
-    def test_wheel_result_is_not_reused_by_other_track_within_5_seconds(self):
+    def test_wheel_result_is_not_reused_by_other_track_after_claim(self):
         provider = _StaticWheelProvider([
             {
+                "entryId": 1,
                 "side": "left",
                 "captureTime": "2026-04-28 11:59:40",
                 "imageJpegBytes": b"abc",
@@ -390,7 +416,7 @@ class WheelBindingTests(unittest.TestCase):
         self.assertNotIn("left", track_state_2.get("wheel_results_locked", {}))
 
         manager._update_track_wheel_results(2, track_state_2, frame_ts=1006.0)
-        self.assertIn("left", track_state_2.get("wheel_results_locked", {}))
+        self.assertNotIn("left", track_state_2.get("wheel_results_locked", {}))
 
     def test_runtime_config_includes_wheel_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:
