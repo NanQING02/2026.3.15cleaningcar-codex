@@ -20,6 +20,7 @@ from .constants import (
     REPORT_MIN_FRAMES,
     VEHICLE_CLASS_IDS,
     WATER_CLASS_IDS,
+    localize_cleaning,
     localize_vehicle,
     select_box_color,
 )

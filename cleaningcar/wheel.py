@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, Optional, Sequence
+from typing import Dict, Sequence
 
 import cv2
 import numpy as np

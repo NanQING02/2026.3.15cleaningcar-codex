@@ -869,7 +869,6 @@ class EventManager:
             if api_payload:
                 track_key = event['id']
                 sent_now = False
-                is_abnormal = bool(api_payload.get('isAbnormal'))
                 if event_type == 1:
                     buffer = self.upload_buffer.setdefault(track_key, [])
                     buffer.append(api_payload)
@@ -1323,22 +1322,6 @@ class EventManager:
             'zone_a': dbg.get('zone_a', False),
             'zone_b': dbg.get('zone_b', False),
         }
-
-    def _resolve_vehicle_type(self, track_state, fallback=''):
-        if not track_state:
-            return fallback or ''
-        locked = track_state.get('vehicle_cls_locked', '')
-        if locked:
-            return locked
-        current = track_state.get('vehicle_cls', '')
-        if current:
-            return current
-        counts = track_state.get('class_counts') or {}
-        if counts:
-            locked = max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
-            if locked:
-                return locked
-        return fallback or track_state.get('last_vehicle_label', '') or ''
 
     def _prepare_capture_image(self, capture_path):
         if not capture_path:
