@@ -488,6 +488,50 @@ class WheelBindingTests(unittest.TestCase):
         manager._update_track_wheel_results(2, track_state_2, frame_ts=1001.2)
         self.assertNotIn("left", track_state_2.get("wheel_results_locked", {}))
 
+    def test_chain_cluster_claim_reaches_entries_beyond_direct_target_radius(self):
+        cache = WheelResultCache(bind_window_seconds=30.0, image_quality=80, entry_cluster_seconds=1.5)
+        frame = np.full((80, 80, 3), 120, dtype=np.uint8)
+        class_names = ["0-25", "25-50", "50-75", "75-100"]
+
+        cache.update_from_detections(
+            side="left",
+            frame=frame,
+            capture_ts=1000.0,
+            boxes=np.array([[30.0, 30.0, 50.0, 50.0]], dtype=np.float32),
+            classes=np.array([0], dtype=np.int64),
+            scores=np.array([0.60], dtype=np.float32),
+            center_min_margin_ratio=0.15,
+            class_names=class_names,
+        )
+        cache.update_from_detections(
+            side="left",
+            frame=frame,
+            capture_ts=1001.4,
+            boxes=np.array([[34.0, 34.0, 66.0, 66.0]], dtype=np.float32),
+            classes=np.array([1], dtype=np.int64),
+            scores=np.array([0.95], dtype=np.float32),
+            center_min_margin_ratio=0.15,
+            class_names=class_names,
+        )
+        cache.update_from_detections(
+            side="left",
+            frame=frame,
+            capture_ts=1002.8,
+            boxes=np.array([[33.0, 33.0, 61.0, 61.0]], dtype=np.float32),
+            classes=np.array([2], dtype=np.int64),
+            scores=np.array([0.80], dtype=np.float32),
+            center_min_margin_ratio=0.15,
+            class_names=class_names,
+        )
+
+        entries = cache.get_recent_result_entries(now_ts=1002.8, reference_ts=1002.8, track_id=1)
+        chosen = next(item for item in entries if item["side"] == "left")
+        self.assertTrue(cache.claim_result_entry(1, chosen["entryId"]))
+
+        entries_track_2 = cache.get_recent_result_entries(now_ts=1002.8, reference_ts=1002.8, track_id=2)
+        left_entries_track_2 = [item for item in entries_track_2 if item["side"] == "left"]
+        self.assertEqual(left_entries_track_2, [])
+
     def test_runtime_config_includes_wheel_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.json"

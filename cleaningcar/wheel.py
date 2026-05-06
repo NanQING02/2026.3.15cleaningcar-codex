@@ -323,17 +323,44 @@ class WheelResultCache:
                     owner = int(entry.get("claimedTrackId", 0) or 0)
                     if owner > 0 and owner != track_id:
                         return False
-                    target_ts = float(entry.get("capture_ts", 0.0) or 0.0)
-                    entry["claimedTrackId"] = track_id
+                    ordered = sorted(
+                        entries,
+                        key=lambda item: float(item.get("capture_ts", 0.0) or 0.0),
+                    )
+                    target_idx = None
+                    for idx, item in enumerate(ordered):
+                        if int(item.get("entryId", 0) or 0) == entry_id:
+                            target_idx = idx
+                            break
+                    if target_idx is None:
+                        return False
+                    cluster_ids = {entry_id}
                     if self.entry_cluster_seconds > 0.0:
-                        for sibling in entries:
-                            sibling_ts = float(sibling.get("capture_ts", 0.0) or 0.0)
-                            if abs(sibling_ts - target_ts) > self.entry_cluster_seconds:
-                                continue
-                            sibling_owner = int(sibling.get("claimedTrackId", 0) or 0)
-                            if sibling_owner > 0 and sibling_owner != track_id:
-                                continue
-                            sibling["claimedTrackId"] = track_id
+                        left_idx = target_idx
+                        while left_idx > 0:
+                            curr_ts = float(ordered[left_idx].get("capture_ts", 0.0) or 0.0)
+                            prev_ts = float(ordered[left_idx - 1].get("capture_ts", 0.0) or 0.0)
+                            if abs(curr_ts - prev_ts) > self.entry_cluster_seconds:
+                                break
+                            cluster_ids.add(int(ordered[left_idx - 1].get("entryId", 0) or 0))
+                            left_idx -= 1
+                        right_idx = target_idx
+                        while right_idx + 1 < len(ordered):
+                            curr_ts = float(ordered[right_idx].get("capture_ts", 0.0) or 0.0)
+                            next_ts = float(ordered[right_idx + 1].get("capture_ts", 0.0) or 0.0)
+                            if abs(next_ts - curr_ts) > self.entry_cluster_seconds:
+                                break
+                            cluster_ids.add(int(ordered[right_idx + 1].get("entryId", 0) or 0))
+                            right_idx += 1
+                    entry["claimedTrackId"] = track_id
+                    for sibling in entries:
+                        sibling_id = int(sibling.get("entryId", 0) or 0)
+                        if sibling_id not in cluster_ids:
+                            continue
+                        sibling_owner = int(sibling.get("claimedTrackId", 0) or 0)
+                        if sibling_owner > 0 and sibling_owner != track_id:
+                            continue
+                        sibling["claimedTrackId"] = track_id
                     return True
         return False
 
