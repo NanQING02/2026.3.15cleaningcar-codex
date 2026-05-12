@@ -1,5 +1,6 @@
 import argparse
 import json
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -41,7 +42,6 @@ from .models import (
     ConfigPayload,
     ConfigSaveAsPayload,
     ConfigSelectPayload,
-    FlowVector,
     SnapshotKeepPayload,
     ZonePayload,
 )
