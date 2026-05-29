@@ -108,6 +108,17 @@
     }
   },
   "logic": {
+    "class_thresholds": {
+      "car": 0.74,
+      "blue truck": 0.40,
+      "yellow truck": 0.63,
+      "dump truck": 0.40,
+      "wuxiao": 0.40,
+      "wheel": 0.55,
+      "cleaning table": 0.35,
+      "manual": 0.36,
+      "license": 0.10
+    },
     "detection_anchor": "bottom_center",
     "zone_a_mask_enable": true,
     "zone_b_entry_hysteresis": 20,

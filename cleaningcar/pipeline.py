@@ -283,10 +283,16 @@ def process_video(path, args):
         fallback_reason = str((meta or {}).get('fallback_reason') or '')
         source_kind = str((meta or {}).get('source_kind') or 'other')
         if success:
-            if mode == 'hw' and not fallback_used:
-                print(f'[reader] {stage}成功：硬解成功 source_kind={source_kind}')
+            if mode == 'hw':
+                if fallback_used:
+                    print(
+                        f'[reader] {stage}成功：硬解回退成功 '
+                        f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
+                    )
+                else:
+                    print(f'[reader] {stage}成功：硬解成功 source_kind={source_kind}')
                 return
-            if mode == 'sw' and fallback_used:
+            if fallback_used:
                 print(
                     f'[reader] {stage}成功：硬解失败已切软解 '
                     f'source_kind={source_kind} fallback_reason={fallback_reason or "unknown"}'
